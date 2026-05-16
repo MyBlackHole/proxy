@@ -1,0 +1,55 @@
+[[domains]]
+name = "free-servers"
+domain = ""
+sub = ["https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"]
+push_to = ["free"]
+enable = true
+ignorede = true
+liveness = true
+rate = 2.5
+count = 2
+
+[crawl]
+enable = false
+
+[groups.free]
+emoji = true
+list = true
+
+[groups.free.targets]
+clash = "free-clash"
+v2ray = "free-v2ray"
+
+[groups.free.regularize]
+enable = true
+locate = true
+residential = true
+bits = 2
+
+[groups.free.smart]
+enable = true
+region_groups = true
+auto_group_type = "url-test"
+fallback_group = true
+load_balance_group = true
+generate_rules = true
+ai_rules = true
+streaming_rules = true
+social_rules = true
+gaming_rules = false
+banking_rules = false
+direct_rules = true
+
+[settings]
+socks_proxy = "http://127.0.0.1:1081"
+
+[storage]
+engine = "local"
+
+[storage.items.free-clash]
+fileid = "clash.yaml"
+folderid = "output"
+
+[storage.items.free-v2ray]
+fileid = "v2ray.txt"
+folderid = "output"

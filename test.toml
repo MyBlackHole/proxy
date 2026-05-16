@@ -1,0 +1,120 @@
+[[domains]]
+name = "free-servers"
+domain = ""
+sub = []
+push_to = ["free"]
+enable = true
+ignorede = true
+liveness = true
+rate = 2.5
+count = 2
+
+[crawl]
+enable = true
+exclude = ""
+threshold = 5
+singlelink = true
+
+[crawl.persist]
+subs = ""
+proxies = ""
+
+[crawl.config]
+rename = ""
+include = ""
+exclude = ""
+
+[crawl.telegram]
+enable = true
+pages = 3
+exclude = ""
+
+[crawl.telegram.users]
+proxyshareCN = { push_to = ["free"] }
+
+[crawl.github]
+enable = true
+pages = 1
+push_to = ["free"]
+exclude = ""
+spams = []
+search_topic = "subscribe+token+v2ray"
+query = ""
+search_repos = ["Pawdroid/Free-servers", "mksshare/mksshare.github.io"]
+
+[crawl.google]
+enable = true
+exclude = ""
+push_to = ["free"]
+
+[crawl.yandex]
+enable = true
+exclude = ""
+push_to = ["free"]
+
+[crawl.twitter]
+enable = true
+
+[crawl.twitter.users]
+v2ray = { push_to = ["free"] }
+ssrsub = { push_to = ["free"] }
+proxylist = { push_to = ["free"] }
+
+[[crawl.repositories]]
+enable = true
+username = "Pawdroid"
+repo_name = "Free-servers"
+commits = 2
+exclude = ""
+push_to = ["free"]
+
+[[crawl.repositories]]
+enable = true
+username = "mksshare"
+repo_name = "mksshare.github.io"
+commits = 2
+exclude = ""
+push_to = ["free"]
+
+[[crawl.pages]]
+enable = true
+url = "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
+include = ""
+exclude = ""
+multiple = false
+placeholder = ""
+start = 1
+end = 1
+push_to = ["free"]
+
+[crawl.pages.config]
+rename = ""
+include = ""
+exclude = ""
+
+[groups.free]
+emoji = true
+list = true
+
+[groups.free.targets]
+clash = "free-clash"
+
+[groups.free.regularize]
+enable = false
+locate = false
+residential = false
+bits = 2
+
+[settings]
+socks_proxy = "socks5://127.0.0.1:1081"
+concurrency = 16
+timeout = 30000
+retry = 1
+test_url = "https://www.gstatic.com/generate_204"
+
+[storage]
+engine = "local"
+
+[storage.items.free-clash]
+fileid = "crawl-output.yaml"
+folderid = "/tmp/crawl"
