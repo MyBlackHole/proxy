@@ -525,6 +525,26 @@ pub struct SmartGroupConfig {
     pub custom_rules: Vec<String>,
 }
 
+impl Default for SmartGroupConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            region_groups: true,
+            auto_group_type: "url-test".to_string(),
+            fallback_group: true,
+            load_balance_group: false,
+            generate_rules: true,
+            ai_rules: true,
+            streaming_rules: true,
+            social_rules: true,
+            gaming_rules: false,
+            banking_rules: false,
+            direct_rules: true,
+            custom_rules: Vec::new(),
+        }
+    }
+}
+
 fn default_smart_auto_type() -> String { "url-test".to_string() }
 
 impl SmartGroupConfig {

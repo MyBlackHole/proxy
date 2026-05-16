@@ -566,7 +566,12 @@ async fn process_group_smart(
                 legacy_convert_fallback(&enriched, target_name)?
             }
         } else {
-            legacy_convert_fallback(&enriched, target_name)?
+            log::info!(
+                "Smart converting {} proxies for target '{}' (default config)",
+                enriched.len(),
+                target_name
+            );
+            convert::convert_enriched_to_clash(&enriched, Some(&SmartGroupConfig::default()))?
         };
 
         if let Some(backend) = storage.get(target_name) {
