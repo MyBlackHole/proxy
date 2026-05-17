@@ -2,6 +2,7 @@ use std::collections::HashMap;
 
 use crate::airport;
 use crate::alive;
+use crate::builder;
 use crate::config::*;
 use crate::convert;
 use crate::crawl;
@@ -631,9 +632,27 @@ async fn process_group_smart(
         all_enriched.to_vec()
     };
 
-    // Decide which converter to use based on smart config
+    // Decide which converter to use
+    let has_advanced = !group.custom_groups.is_empty()
+        || !group.rulesets.is_empty()
+        || group.template.is_some();
+
     for target_name in group.targets.values() {
-        let content = if let Some(ref smart) = group.smart {
+        let content = if has_advanced {
+            log::info!(
+                "Building Clash config with custom groups/rulesets for target '{}'",
+                target_name
+            );
+            let gen_cfg = builder::ClashGenerationConfig {
+                enriched: &enriched,
+                smart: group.smart.as_ref(),
+                custom_groups: &group.custom_groups,
+                rulesets: &group.rulesets,
+                template: group.template.as_ref(),
+                test_url: "https://www.gstatic.com/generate_204",
+            };
+            builder::build_clash_config(client, gen_cfg).await?
+        } else if let Some(ref smart) = group.smart {
             if smart.enable {
                 log::info!(
                     "Smart converting {} proxies for target '{}'",

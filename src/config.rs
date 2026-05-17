@@ -464,7 +464,108 @@ pub struct GroupConfig {
 
     #[serde(default)]
     pub smart: Option<SmartGroupConfig>,
+
+    // ── Custom Proxy Groups (subconverter-style) ──
+
+    /// User-defined proxy groups with regex-based proxy matching
+    #[serde(default)]
+    pub custom_groups: Vec<CustomGroupConfig>,
+
+    // ── External Rule Sets ──
+
+    /// Remote rule sets downloaded and injected as inline rules or rule-providers
+    #[serde(default)]
+    pub rulesets: Vec<RulesetConfig>,
+
+    // ── Template Override ──
+
+    /// Custom base Clash YAML template (replaces default header)
+    #[serde(default)]
+    pub template: Option<TemplateConfig>,
 }
+
+/// Custom proxy group — subconverter-style regex-based group membership
+///
+/// Each group defines a list of `proxies` entries. Each entry is either:
+/// - A **regex pattern** (e.g. `"(美|美国|US)"`) — matches proxy names
+/// - A **special policy marker** (e.g. `"[]DIRECT"`, `"[]REJECT"`, `"[]PASS"`)
+/// - A **group reference** (e.g. `"[]自动选择"`) — references another custom group
+#[derive(Debug, Clone, Deserialize)]
+pub struct CustomGroupConfig {
+    /// Display name of the proxy group
+    pub name: String,
+
+    /// Group type: "select", "url-test", "fallback", "load-balance"
+    #[serde(default = "default_custom_group_type")]
+    pub group_type: String,
+
+    /// Proxy membership: regex patterns (match proxy names) and/or [] directives
+    #[serde(default)]
+    pub proxies: Vec<String>,
+
+    /// Health-check URL (required for url-test / fallback)
+    pub url: Option<String>,
+
+    /// Health-check interval in seconds
+    #[serde(default = "default_group_interval")]
+    pub interval: u64,
+
+    /// Tolerance in ms (url-test only)
+    #[serde(default)]
+    pub tolerance: Option<u64>,
+
+    /// Load-balance strategy: "round-robin" or "consistent-hashing"
+    #[serde(default)]
+    pub strategy: Option<String>,
+
+    /// Lazy loading (don't health-check until first use)
+    #[serde(default = "default_true")]
+    pub lazy: bool,
+
+    /// Disable UDP for this group
+    #[serde(default)]
+    pub disable_udp: bool,
+}
+
+fn default_custom_group_type() -> String { "select".to_string() }
+fn default_group_interval() -> u64 { 300 }
+
+/// An external rule set that gets downloaded and converted to Clash rules
+#[derive(Debug, Clone, Deserialize)]
+pub struct RulesetConfig {
+    /// Target policy group (e.g. "Proxy", "DIRECT", "REJECT")
+    pub group: String,
+
+    /// URL of the rule set file (Surge / Clash / Quantumult X format)
+    pub url: String,
+
+    /// Refresh interval in seconds
+    #[serde(default = "default_ruleset_interval")]
+    pub interval: u64,
+
+    /// Explicit behavior: "domain", "ipcidr", "classical" (auto-detect if None)
+    #[serde(default)]
+    pub behavior: Option<String>,
+}
+
+fn default_ruleset_interval() -> u64 { 86400 }
+
+/// Custom base template for Clash output
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct TemplateConfig {
+    /// Path to a base Clash YAML template file
+    ///
+    /// The template should be a valid Clash config without the `proxies`,
+    /// `proxy-groups`, `rules`, or `rule-providers` keys — those are injected
+    /// by the converter. If not specified, a hardcoded default header is used.
+    pub base: Option<String>,
+
+    /// Maximum number of inline rules before auto-converting to rule-provider
+    #[serde(default = "default_provider_threshold")]
+    pub provider_threshold: usize,
+}
+
+fn default_provider_threshold() -> usize { 50 }
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct SmartGroupConfig {

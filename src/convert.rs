@@ -28,7 +28,7 @@ impl ClashRule {
 }
 
 /// Top-level Clash config header keys shared by all output modes.
-fn default_clash_header() -> serde_yaml::Mapping {
+pub(crate) fn default_clash_header() -> serde_yaml::Mapping {
     let mut config = serde_yaml::Mapping::new();
     config.insert("port".into(), 7890.into());
     config.insert("socks-port".into(), 7891.into());
@@ -130,7 +130,7 @@ fn build_auto_group(name: &str, proxies: &[String], group_type: &str) -> serde_y
     serde_yaml::Value::Mapping(map)
 }
 
-fn build_select_group(name: &str, proxies: &[String]) -> serde_yaml::Value {
+pub(crate) fn build_select_group(name: &str, proxies: &[String]) -> serde_yaml::Value {
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), name.into());
     map.insert("type".into(), "select".into());
@@ -144,7 +144,7 @@ fn build_select_group(name: &str, proxies: &[String]) -> serde_yaml::Value {
 
 // ── Build Rules ─────────────────────────────────────────────────────────────
 
-fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
+pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
     let mut rules = Vec::new();
 
     if smart.ai_rules {
