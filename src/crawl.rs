@@ -39,10 +39,23 @@ pub fn build_crawl_client(proxy: Option<&str>) -> Result<reqwest::Client> {
 pub fn extract_subscribes(content: &str) -> Vec<String> {
     let mut results: Vec<String> = Vec::new();
 
+    // ── Subscription URL patterns ──
+    // 1. v2board / SSPanel / common panel subscribe APIs
+    // 2. Clash / sing-box subscription endpoints
+    // 3. Direct proxy links (12+ protocols)
+    // 4. Comment-marked subscribe URLs
+    // 5. Generic subscription paths (often embedded in HTML/JSON)
     let patterns = [
-        r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+(?::\d+)?(?:(?:(?:/index.php)?/api/v1/client/subscribe\?token=[a-zA-Z0-9]{16,32})|(?:/link/[a-zA-Z0-9]+\?(?:sub|mu|clash)=\d)|(?:/(?:s|sub)/[a-zA-Z0-9]{32}))",
-        r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+/sub\?(?:\S+)?target=\S+",
-        r"(?:vmess|trojan|ss|ssr|snell|hysteria2|vless|hysteria|tuic|anytls)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}",
+        // SSPanel / v2board / similar panels: subscribe tokens, links, short-IDs
+        r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+(?::\d+)?(?:/(?:index\.php)?)?/api/v[12]/(?:client/subscribe|user/getSubscribe)\?token=[a-zA-Z0-9]{16,48}",
+        // Link-based subscriptions: /link/xxx?sub=1, /link/xxx?mu=1, /s/xxx
+        r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+(?::\d+)?/(?:link/[a-zA-Z0-9]+\?(?:sub|mu|clash)=\d|s(?:ub)?/[a-zA-Z0-9]{24,48})",
+        // Clash / sing-box subscription endpoints
+        r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+/sub\?(?:\S+)?(?:target=|flag=)\S+",
+        // Generic subscribe keyword in URL
+        r#"https?://[^\s"\'<>]+(?:subscribe|subscription|sub\?)[^\s"\'<>]{8,}"#,
+        // Direct proxy links (all supported protocols)
+        r"(?:vmess|trojan|ss|ssr|snell|hysteria2?|vless|tuic|anytls|socks5|http|https?)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}",
     ];
 
     for pattern in &patterns {
@@ -56,7 +69,8 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
         }
     }
 
-    if let Ok(re) = Regex::new(r#"(?m)^#(?:\s+)?(?:!MANAGED-CONFIG|订阅链接)[^\n]*?(https?://[^\s"'<>]+)"#) {
+    // Comment-marked subscribe URLs: Clash config headers, Chinese markers
+    if let Ok(re) = Regex::new(r#"(?m)^[#;]\s*(?:!MANAGED-CONFIG|订阅链接|subscribe)[^\n]*?(https?://[^\s"'<>]+)"#) {
         for cap in re.captures_iter(content) {
             if let Some(url_match) = cap.get(1) {
                 let s = url_match.as_str().trim().to_string();
@@ -369,8 +383,14 @@ pub async fn crawl_google(
                         results.push(s);
                     }
                 }
+
+                // Also find broader subscription/ proxy patterns in cleaned text
+                results.extend(extract_subscribes(&cleaned));
             }
     }
+
+    results.sort();
+    results.dedup();
 
     Ok(results)
 }
@@ -423,8 +443,15 @@ pub async fn crawl_yandex(
                         results.push(s);
                     }
                 }
+
+                // Also find broader subscription/ proxy patterns in cleaned text
+                let cleaned = text.replace("<b>", "").replace("</b>", "").replace("<br>", "");
+                results.extend(extract_subscribes(&cleaned));
             }
     }
+
+    results.sort();
+    results.dedup();
 
     Ok(results)
 }
@@ -536,12 +563,283 @@ pub async fn crawl_pages(
                 if let Ok(resp) = client.get(&expanded).send().await
                     && let Ok(text) = resp.text().await {
                         results.extend(extract_subscribes(&text));
+                        // Depth crawling: follow links on the page
+                        if page_config.depth > 0 {
+                            results.extend(crawl_page_depth(client, &text, page_config.depth - 1).await);
+                        }
                     }
             }
         } else if let Ok(resp) = client.get(url).send().await
         && let Ok(text) = resp.text().await {
             results.extend(extract_subscribes(&text));
+            // Depth crawling: follow links on the page
+            if page_config.depth > 0 {
+                results.extend(crawl_page_depth(client, &text, page_config.depth - 1).await);
+            }
         }
+    }
+
+    results.sort();
+    results.dedup();
+    Ok(results)
+}
+
+/// Recursively follow http/https links found in page content up to remaining depth
+fn crawl_page_depth<'a>(client: &'a reqwest::Client, content: &'a str, remaining: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
+    Box::pin(async move {
+        if remaining == 0 {
+            return Vec::new();
+        }
+
+        let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
+            Ok(r) => r,
+            Err(_) => return Vec::new(),
+        };
+
+        let mut results = Vec::new();
+        let mut seen = std::collections::HashSet::new();
+
+        for m in link_re.find_iter(content) {
+            let link = m.as_str().trim().to_string();
+            if !link.starts_with("http://") && !link.starts_with("https://") {
+                continue;
+            }
+            // Skip already-known subscribe patterns (already handled by extract_subscribes)
+            if link.contains("subscribe") || link.contains("token=") || link.contains("vmess://") {
+                continue;
+            }
+            if !seen.insert(link.clone()) {
+                continue;
+            }
+            if seen.len() > 20 {
+                break; // limit link-following per page
+            }
+
+            if let Ok(resp) = client.get(&link).send().await
+                && let Ok(text) = resp.text().await {
+                    results.extend(extract_subscribes(&text));
+                    if remaining > 1 {
+                        results.extend(crawl_page_depth(client, &text, remaining - 1).await);
+                    }
+                }
+        }
+
+        results
+    })
+}
+
+/// Search GitHub Gists for proxy-related content
+pub async fn crawl_github_gists(
+    client: &reqwest::Client,
+    query: &str,
+    token: &str,
+) -> Result<Vec<String>> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let encoded: String = percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC).to_string();
+    let url = format!(
+        "https://api.github.com/search/code?q={}+language:text&per_page=50&page=1",
+        encoded
+    );
+    // Also search gists directly
+    let gist_url = format!(
+        "https://api.github.com/gists/public?per_page=50&page=1"
+    );
+
+    let mut results = Vec::new();
+
+    // Search gist content via code search (limited, but catches gists indexed by GitHub)
+    if let Ok(resp) = client
+        .get(&url)
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        && let Ok(body) = resp.json::<serde_json::Value>().await
+            && let Some(items) = body.get("items").and_then(|v| v.as_array()) {
+                for item in items {
+                    if let Some(html_url) = item.get("html_url").and_then(|v| v.as_str())
+                        && let Ok(resp) = client.get(html_url).send().await
+                            && let Ok(text) = resp.text().await {
+                                results.extend(extract_subscribes(&text));
+                            }
+                }
+            }
+
+    // Fetch recent public gists and scan their raw content
+    if let Ok(resp) = client
+        .get(&gist_url)
+        .header("Accept", "application/vnd.github+json")
+        .header("Authorization", format!("Bearer {}", token))
+        .send()
+        .await
+        && let Ok(gists) = resp.json::<Vec<serde_json::Value>>().await {
+                for gist in &gists {
+                    if let Some(files) = gist.get("files").and_then(|v| v.as_object()) {
+                        for (_name, file) in files {
+                            if let Some(raw_url) = file.get("raw_url").and_then(|v| v.as_str()) {
+                                // Only fetch files that look like proxy configs
+                                if raw_url.contains(".yaml") || raw_url.contains(".yml")
+                                    || raw_url.contains(".txt") || raw_url.contains(".conf")
+                                    || raw_url.contains("config") || raw_url.contains("proxy")
+                                {
+                                    if let Ok(resp) = client.get(raw_url).send().await
+                                        && let Ok(text) = resp.text().await {
+                                            results.extend(extract_subscribes(&text));
+                                        }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+    results.sort();
+    results.dedup();
+    Ok(results)
+}
+
+/// Search GitHub topics for proxy-related repositories, scan their READMEs
+pub async fn crawl_github_topics(
+    client: &reqwest::Client,
+    topics: &[String],
+    token: &str,
+) -> Vec<String> {
+    if topics.is_empty() {
+        return Vec::new();
+    }
+
+    let mut results = Vec::new();
+    for topic in topics {
+        if topic.is_empty() {
+            continue;
+        }
+        let encoded: String = percent_encoding::utf8_percent_encode(topic, percent_encoding::NON_ALPHANUMERIC).to_string();
+        let url = format!(
+            "https://api.github.com/search/repositories?q=topic:{}&sort=updated&order=desc&per_page=20&page=1",
+            encoded
+        );
+
+        if let Ok(resp) = client
+            .get(&url)
+            .header("Accept", "application/vnd.github+json")
+            .header("Authorization", format!("Bearer {}", token))
+            .send()
+            .await
+            && let Ok(body) = resp.json::<serde_json::Value>().await
+                && let Some(items) = body.get("items").and_then(|v| v.as_array()) {
+                    for item in items {
+                        let full_name = match item.get("full_name").and_then(|v| v.as_str()) {
+                            Some(n) => n.to_string(),
+                            None => continue,
+                        };
+                        // Fetch README
+                        let readme_url = format!(
+                            "https://api.github.com/repos/{}/readme",
+                            full_name
+                        );
+                        if let Ok(resp) = client
+                            .get(&readme_url)
+                            .header("Accept", "application/vnd.github.raw")
+                            .header("Authorization", format!("Bearer {}", token))
+                            .send()
+                            .await
+                            && let Ok(text) = resp.text().await {
+                                results.extend(extract_subscribes(&text));
+                            }
+                    }
+                }
+    }
+
+    results.sort();
+    results.dedup();
+    results
+}
+
+/// Search Twitter by keyword using the GraphQL search endpoint
+pub async fn crawl_twitter_search(
+    client: &reqwest::Client,
+    query: &str,
+    count: usize,
+) -> Result<Vec<String>> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let guest_token = get_twitter_guest_token(client).await?;
+    let tweet_count = count.clamp(1, 100);
+    let auth_header = format!("Bearer {}", TWITTER_BEARER);
+
+    let features = serde_json::json!({
+        "blue_business_profile_image_shape_enabled": true,
+        "responsive_web_graphql_exclude_directive_enabled": true,
+        "verified_phone_label_enabled": false,
+        "responsive_web_graphql_skip_user_profile_image_extensions_enabled": false,
+        "responsive_web_graphql_timeline_navigation_enabled": true,
+    });
+
+    let search_variables = serde_json::json!({
+        "rawQuery": query,
+        "count": tweet_count,
+        "product": "Top",
+        "includePromotedContent": false,
+    });
+
+    let search_url = format!(
+        "https://twitter.com/i/api/graphql/gkjsKepM6glHm36JjW4V3A/SearchTimeline?variables={}&features={}",
+        percent_encoding::utf8_percent_encode(&search_variables.to_string(), percent_encoding::NON_ALPHANUMERIC),
+        percent_encoding::utf8_percent_encode(&features.to_string(), percent_encoding::NON_ALPHANUMERIC),
+    );
+
+    let resp = client
+        .get(&search_url)
+        .header("Authorization", &auth_header)
+        .header("X-Guest-Token", &guest_token)
+        .send()
+        .await?;
+
+    let body: serde_json::Value = resp.json().await?;
+    let text = body.to_string();
+    let results = extract_subscribes(&text);
+
+    Ok(results)
+}
+
+/// Search public Telegram groups by keyword via t.me search
+pub async fn crawl_telegram_search(
+    client: &reqwest::Client,
+    query: &str,
+    pages: usize,
+) -> Result<Vec<String>> {
+    if query.is_empty() {
+        return Ok(Vec::new());
+    }
+    let encoded: String = percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC).to_string();
+
+    let mut results = Vec::new();
+
+    // Use Telegram Web search (t.me/search)
+    for page in 0..pages {
+        let _url = format!(
+            "https://t.me/s/{}?before={}",
+            encoded,
+            if page == 0 { "" } else { &page.to_string() }
+        );
+
+        if page == 0 {
+            let url = format!("https://t.me/search?q={}", encoded);
+            if let Ok(resp) = client.get(&url).send().await
+                && let Ok(text) = resp.text().await {
+                    results.extend(extract_subscribes(&text));
+                }
+        }
+
+        // Also try t.me/s/ search via the search page
+        let search_url = format!("https://t.me/search?q={}&page={}", encoded, page);
+        if let Ok(resp) = client.get(&search_url).send().await
+            && let Ok(text) = resp.text().await {
+                results.extend(extract_subscribes(&text));
+            }
     }
 
     results.sort();

@@ -163,9 +163,6 @@ pub struct CrawlConfig {
 
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
-
-    #[serde(default)]
-    pub scripts: Vec<ScriptCrawlConfig>,
 }
 
 fn default_threshold() -> usize { 5 }
@@ -200,12 +197,26 @@ pub struct TelegramCrawlConfig {
     #[serde(default = "default_telegram_pages")]
     pub pages: usize,
 
+    /// Enable searching Telegram by keyword across public groups
+    #[serde(default)]
+    pub search_enable: bool,
+
+    /// Keyword to search for in public Telegram groups
+    #[serde(default)]
+    pub search_query: String,
+
+    /// Number of search result pages to crawl
+    #[serde(default = "default_telegram_search_pages")]
+    pub search_pages: usize,
+
     #[serde(default)]
     pub exclude: String,
 
     #[serde(default)]
     pub users: HashMap<String, TelegramUserConfig>,
 }
+
+fn default_telegram_search_pages() -> usize { 3 }
 
 fn default_telegram_pages() -> usize { 5 }
 
@@ -226,101 +237,33 @@ pub struct TelegramUserConfig {
 
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct GoogleCrawlConfig {
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    #[serde(default)]
-    pub exclude: String,
-
-    #[serde(default = "default_google_limits")]
-    pub limits: usize,
-
-    #[serde(default)]
-    pub notinurl: Vec<String>,
-
-    #[serde(default)]
-    pub push_to: Vec<String>,
-}
-
-fn default_google_limits() -> usize { 100 }
-
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct YandexCrawlConfig {
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    #[serde(default)]
-    pub exclude: String,
-
-    #[serde(default = "default_yandex_within")]
-    pub within: usize,
-
-    #[serde(default = "default_yandex_pages")]
-    pub pages: usize,
-
-    #[serde(default)]
-    pub notinurl: Vec<String>,
-
-    #[serde(default)]
-    pub push_to: Vec<String>,
-}
-
-fn default_yandex_within() -> usize { 3 }
-fn default_yandex_pages() -> usize { 5 }
-
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct GithubCrawlConfig {
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    #[serde(default = "default_github_pages")]
-    pub pages: usize,
-
-    #[serde(default)]
-    pub push_to: Vec<String>,
-
-    #[serde(default)]
-    pub exclude: String,
-
-    #[serde(default)]
-    pub spams: Vec<String>,
-
-    #[serde(default)]
-    pub search_topic: String,
-
-    #[serde(default)]
-    pub query: String,
-
-    #[serde(default)]
-    pub users: HashMap<String, GithubUserConfig>,
-
-    #[serde(default)]
-    pub search_repos: Vec<String>,
-}
-
-fn default_github_pages() -> usize { 2 }
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct GithubUserConfig {
-    #[serde(default)]
-    pub sub: String,
-
-    #[serde(default)]
-    pub push_to: Vec<String>,
-}
-
-
-#[derive(Debug, Clone, Default, Deserialize)]
 pub struct TwitterCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
 
+    /// Search Twitter by keyword globally for proxy content
+    #[serde(default)]
+    pub search_enable: bool,
+
+    /// Keyword to search for on Twitter
+    #[serde(default)]
+    pub search_query: String,
+
+    /// Number of tweets to fetch in search results
+    #[serde(default = "default_twitter_search_count")]
+    pub search_count: usize,
+
     #[serde(default)]
     pub users: HashMap<String, TwitterUserConfig>,
 }
+
+fn default_twitter_search_count() -> usize { 30 }
+
+fn default_google_limits() -> usize { 100 }
+fn default_yandex_within() -> usize { 3 }
+fn default_yandex_pages() -> usize { 5 }
+fn default_github_pages() -> usize { 2 }
+fn default_github_commits() -> usize { 3 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TwitterUserConfig {
@@ -347,28 +290,29 @@ fn default_twitter_num() -> usize { 30 }
 
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct RepoCrawlConfig {
+pub struct YandexCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
 
     #[serde(default)]
-    pub username: String,
-
-    #[serde(default)]
-    pub repo_name: String,
-
-    #[serde(default = "default_repo_commits")]
-    pub commits: usize,
-
-    #[serde(default)]
     pub exclude: String,
+
+    /// Independent search query (if empty, falls back to github.search_topic for backwards compat)
+    #[serde(default)]
+    pub query: String,
+
+    #[serde(default = "default_yandex_within")]
+    pub within: usize,
+
+    #[serde(default = "default_yandex_pages")]
+    pub pages: usize,
+
+    #[serde(default)]
+    pub notinurl: Vec<String>,
 
     #[serde(default)]
     pub push_to: Vec<String>,
 }
-
-fn default_repo_commits() -> usize { 3 }
-
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct PageCrawlConfig {
@@ -398,6 +342,10 @@ pub struct PageCrawlConfig {
     #[serde(default)]
     pub config: CrawlItemConfig,
 
+    /// Link-following depth (0 = no link following, 1 = follow links from the page, etc.)
+    #[serde(default)]
+    pub depth: usize,
+
     #[serde(default)]
     pub push_to: Vec<String>,
 }
@@ -407,45 +355,97 @@ fn default_page_end() -> usize { 10 }
 
 
 #[derive(Debug, Clone, Default, Deserialize)]
+pub struct GoogleCrawlConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    #[serde(default)]
+    pub exclude: String,
+
+    #[serde(default = "default_google_limits")]
+    pub limits: usize,
+
+    /// Independent search query (if empty, falls back to github.search_topic for backwards compat)
+    #[serde(default)]
+    pub query: String,
+
+    #[serde(default)]
+    pub notinurl: Vec<String>,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
 pub struct ScriptCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
-
-    #[serde(default)]
-    pub script: String,
-
-    #[serde(default)]
-    pub params: ScriptParams,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ScriptParams {
+pub struct GithubUserConfig {
     #[serde(default)]
-    pub persist: HashMap<String, String>,
+    pub sub: String,
 
     #[serde(default)]
-    pub config: ScriptItemConfig,
-
-    #[serde(flatten)]
-    pub extra: HashMap<String, serde_json::Value>,
+    pub push_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ScriptItemConfig {
+pub struct RepoCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
 
+    #[serde(default)]
+    pub username: String,
+
+    #[serde(default)]
+    pub repo_name: String,
+
+    #[serde(default = "default_github_commits")]
+    pub commits: usize,
+}
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct GithubCrawlConfig {
     #[serde(default = "default_true")]
-    pub liveness: bool,
+    pub enable: bool,
+
+    #[serde(default = "default_github_pages")]
+    pub pages: usize,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
 
     #[serde(default)]
     pub exclude: String,
 
     #[serde(default)]
-    pub rename: String,
+    pub spams: Vec<String>,
 
     #[serde(default)]
-    pub push_to: Vec<String>,
+    pub search_topic: String,
+
+    #[serde(default)]
+    pub query: String,
+
+    /// Search GitHub Gists for proxy content
+    #[serde(default)]
+    pub search_gists: bool,
+
+    /// Search GitHub Topics matching these keywords
+    #[serde(default)]
+    pub search_topics: Vec<String>,
+
+    /// Search repository README files for proxy links
+    #[serde(default)]
+    pub search_readme: bool,
+
+    #[serde(default)]
+    pub users: HashMap<String, GithubUserConfig>,
+
+    #[serde(default)]
+    pub search_repos: Vec<String>,
 }
 
 
@@ -618,6 +618,9 @@ pub struct SettingsConfig {
 
     #[serde(default)]
     pub invisible: bool,
+
+    #[serde(default)]
+    pub validate_binary: Option<String>,
 }
 
 fn default_concurrency() -> usize { 64 }

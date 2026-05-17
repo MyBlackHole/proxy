@@ -12,4 +12,5 @@ pub mod proxy;
 pub mod renewal;
 pub mod storage;
 pub mod subscribe;
+pub mod validate;
 pub mod workflow;

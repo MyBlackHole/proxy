@@ -29,6 +29,11 @@ enable = true
 pages = 3
 exclude = ""
 
+# Telegram 关键词搜索
+search_enable = true
+search_query = "v2ray subscribe"
+search_pages = 1
+
 [crawl.telegram.users]
 proxyshareCN = { push_to = ["free"] }
 
@@ -42,18 +47,27 @@ search_topic = "subscribe+token+v2ray"
 query = ""
 search_repos = ["Pawdroid/Free-servers", "mksshare/mksshare.github.io"]
 
+# GitHub Gist 和 Topic 搜索
+search_gists = true
+search_topics = ["v2ray", "proxy", "subscribe"]
+
 [crawl.google]
 enable = true
 exclude = ""
 push_to = ["free"]
+query = "v2ray subscribe token"
 
 [crawl.yandex]
 enable = true
 exclude = ""
 push_to = ["free"]
+query = "v2ray subscribe token"
 
 [crawl.twitter]
 enable = true
+search_enable = true
+search_query = "v2ray proxy subscribe"
+search_count = 20
 
 [crawl.twitter.users]
 v2ray = { push_to = ["free"] }
@@ -85,6 +99,7 @@ multiple = false
 placeholder = ""
 start = 1
 end = 1
+depth = 1
 push_to = ["free"]
 
 [crawl.pages.config]

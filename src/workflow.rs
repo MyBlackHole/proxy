@@ -198,6 +198,26 @@ async fn run_crawlers(
                 }
             }));
         }
+
+        // Telegram keyword search across public groups
+        if crawl_cfg.telegram.search_enable && !crawl_cfg.telegram.search_query.is_empty() {
+            let client = client.clone();
+            let search_query = crawl_cfg.telegram.search_query.clone();
+            let search_pages = crawl_cfg.telegram.search_pages;
+            handles.push(tokio::spawn(async move {
+                log::info!("Telegram search: {}", search_query);
+                match crawl::crawl_telegram_search(&client, &search_query, search_pages).await {
+                    Ok(urls) => {
+                        log::info!("Telegram search: {} subscribe URLs", urls.len());
+                        urls
+                    }
+                    Err(e) => {
+                        log::warn!("Telegram search failed: {}", e);
+                        Vec::new()
+                    }
+                }
+            }));
+        }
     }
 
     // ── GitHub code search ──
@@ -257,17 +277,21 @@ async fn run_crawlers(
         }));
     }
 
-    // ── Google search ──
+    // ── Google search (uses dedicated query if set, falls back to github.search_topic) ──
     if crawl_cfg.google.enable {
         let client = client.clone();
-        let query = crawl_cfg.github.search_topic.clone();
+        let google_query = if !crawl_cfg.google.query.is_empty() {
+            crawl_cfg.google.query.clone()
+        } else {
+            crawl_cfg.github.search_topic.clone()
+        };
         handles.push(tokio::spawn(async move {
-            if query.is_empty() {
+            if google_query.is_empty() {
                 return Vec::new();
             }
             log::info!("Crawling Google search");
             let max_pages = 3;
-            match crawl::crawl_google(&client, &query, max_pages).await {
+            match crawl::crawl_google(&client, &google_query, max_pages).await {
                 Ok(found) => {
                     log::info!("Google: {} subscribe URLs", found.len());
                     found
@@ -280,17 +304,21 @@ async fn run_crawlers(
         }));
     }
 
-    // ── Yandex search ──
+    // ── Yandex search (uses dedicated query if set, falls back to github.search_topic) ──
     if crawl_cfg.yandex.enable {
         let client = client.clone();
-        let query = crawl_cfg.github.search_topic.clone();
+        let yandex_query = if !crawl_cfg.yandex.query.is_empty() {
+            crawl_cfg.yandex.query.clone()
+        } else {
+            crawl_cfg.github.search_topic.clone()
+        };
         let yandex_pages = crawl_cfg.yandex.pages;
         handles.push(tokio::spawn(async move {
-            if query.is_empty() {
+            if yandex_query.is_empty() {
                 return Vec::new();
             }
             log::info!("Crawling Yandex search");
-            match crawl::crawl_yandex(&client, &query, yandex_pages).await {
+            match crawl::crawl_yandex(&client, &yandex_query, yandex_pages).await {
                 Ok(found) => {
                     log::info!("Yandex: {} subscribe URLs", found.len());
                     found
@@ -303,14 +331,52 @@ async fn run_crawlers(
         }));
     }
 
-    // ── Twitter users ──
+    // ── GitHub gist search ──
+    if crawl_cfg.github.enable && crawl_cfg.github.search_gists {
+        let token = gh_token.clone();
+        let query = crawl_cfg.github.query.clone();
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            log::info!("Crawling GitHub gists");
+            match crawl::crawl_github_gists(&client, &query, &token).await {
+                Ok(found) => {
+                    log::info!("GitHub gists: {} subscribe URLs", found.len());
+                    found
+                }
+                Err(e) => {
+                    log::warn!("GitHub gist crawl failed: {}", e);
+                    Vec::new()
+                }
+            }
+        }));
+    }
+
+    // ── GitHub topic search ──
+    if crawl_cfg.github.enable && !crawl_cfg.github.search_topics.is_empty() {
+        let token = gh_token.clone();
+        let topics = crawl_cfg.github.search_topics.clone();
+        let client = client.clone();
+        handles.push(tokio::spawn(async move {
+            log::info!("Crawling GitHub topics");
+            let found = crawl::crawl_github_topics(&client, &topics, &token).await;
+            log::info!("GitHub topics: {} subscribe URLs", found.len());
+            found
+        }));
+    }
+
+    // ── Twitter users + Twitter keyword search ──
     if crawl_cfg.twitter.enable {
         let client = client.clone();
         let users: Vec<(String, bool, usize)> = crawl_cfg.twitter.users.iter()
             .map(|(k, v)| (k.clone(), v.enable, v.num))
             .collect();
+        let search_enable = crawl_cfg.twitter.search_enable;
+        let search_query = crawl_cfg.twitter.search_query.clone();
+        let search_count = crawl_cfg.twitter.search_count;
         handles.push(tokio::spawn(async move {
             let mut urls = Vec::new();
+
+            // Per-user media timeline crawl
             for (name, enabled, num) in &users {
                 if !enabled { continue; }
                 log::info!("Crawling Twitter user: {}", name);
@@ -322,6 +388,19 @@ async fn run_crawlers(
                     Err(e) => log::warn!("Twitter {} crawl failed: {}", name, e),
                 }
             }
+
+            // Global keyword search
+            if search_enable && !search_query.is_empty() {
+                log::info!("Crawling Twitter search: {}", search_query);
+                match crawl::crawl_twitter_search(&client, &search_query, search_count).await {
+                    Ok(found) => {
+                        log::info!("Twitter search: {} subscribe URLs", found.len());
+                        urls.extend(found);
+                    }
+                    Err(e) => log::warn!("Twitter search crawl failed: {}", e),
+                }
+            }
+
             urls
         }));
     }

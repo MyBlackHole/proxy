@@ -1,8 +1,17 @@
 use crate::error::{AppError, Result};
 use crate::proxy::*;
 use base64::Engine as _;
+use percent_encoding::percent_decode_str;
 use std::collections::HashMap;
 use url::Url;
+
+/// URL-decode + replace `+` with space (form-urlencoded semantics)
+fn decode_userinfo(s: &str) -> String {
+    percent_decode_str(s)
+        .decode_utf8()
+        .map(|c| c.replace('+', " "))
+        .unwrap_or_else(|_| s.to_string())
+}
 
 pub fn parse_proxy_url(input: &str) -> Result<ProxyNode> {
     let input = input.trim();
@@ -40,7 +49,7 @@ pub fn parse_proxy_url(input: &str) -> Result<ProxyNode> {
 
 fn parse_query_params(url: &Url) -> HashMap<String, String> {
     url.query_pairs()
-        .map(|(k, v)| (k.to_string(), v.to_string()))
+        .map(|(k, v)| (k.to_string(), v.replace('+', " ")))
         .collect()
 }
 
@@ -111,7 +120,7 @@ fn extract_name_from_url(url: &Url) -> Option<String> {
         .map(|s| {
             percent_encoding::percent_decode(s.as_bytes())
                 .decode_utf8()
-                .map(|c| c.to_string())
+                .map(|c| c.replace('+', " "))
                 .unwrap_or_else(|_| s.to_string())
         })
         .filter(|s| !s.is_empty())
@@ -331,13 +340,14 @@ pub fn parse_trojan(raw_url: &str) -> Result<ProxyNode> {
         .ok_or_else(|| AppError::InvalidProxy("trojan: missing host".into()))?;
     let port = url.port().unwrap_or(443);
 
-    let password = url.username().to_string();
+    let password = decode_userinfo(url.username());
     if password.is_empty() {
         return Err(AppError::InvalidProxy("trojan: missing password".into()));
     }
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "trojan"));
+    let name = name.replace('+', " ");
     let sni = params
         .get("sni")
         .or(params.get("peer"))
@@ -446,13 +456,14 @@ pub fn parse_vless(raw_url: &str) -> Result<ProxyNode> {
         .ok_or_else(|| AppError::InvalidProxy("vless: missing host".into()))?;
     let port = url.port().unwrap_or(443);
 
-    let uuid = url.username().to_string();
+    let uuid = decode_userinfo(url.username());
     if uuid.is_empty() {
         return Err(AppError::InvalidProxy("vless: missing uuid".into()));
     }
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "vless"));
+    let name = name.replace('+', " ");
 
     let tls_val = params.get("security").or(params.get("tls"));
     let tls = tls_val.map(|s| s == "tls" || s == "reality" || s == "true");
@@ -507,11 +518,12 @@ pub fn parse_http(raw_url: &str) -> Result<ProxyNode> {
         .ok_or_else(|| AppError::InvalidProxy("http: missing host".into()))?;
     let port = url.port().unwrap_or(80);
 
-    let username = url.username().to_string();
-    let password = url.password().map(|s| s.to_string());
+    let username = decode_userinfo(url.username());
+    let password = url.password().map(decode_userinfo);
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "http"));
+    let name = name.replace('+', " ");
     let tls = params.get("tls").map(|s| s == "true" || s == "1");
     let sni = params.get("sni").cloned();
     let skip_cert_verify = params
@@ -539,11 +551,12 @@ pub fn parse_socks5(raw_url: &str) -> Result<ProxyNode> {
         .ok_or_else(|| AppError::InvalidProxy("socks5: missing host".into()))?;
     let port = url.port().unwrap_or(1080);
 
-    let username = url.username().to_string();
-    let password = url.password().map(|s| s.to_string());
+    let username = decode_userinfo(url.username());
+    let password = url.password().map(decode_userinfo);
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "socks5"));
+    let name = name.replace('+', " ");
     let tls = params.get("tls").map(|s| s == "true" || s == "1");
     let sni = params.get("sni").cloned();
     let skip_cert_verify = params
@@ -633,8 +646,9 @@ pub fn parse_hysteria2(raw_url: &str) -> Result<ProxyNode> {
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "hysteria2"));
+    let name = name.replace('+', " ");
 
-    let password = url.username().to_string();
+    let password = decode_userinfo(url.username());
     let password = if password.is_empty() {
         params.get("password").cloned().unwrap_or_default()
     } else {
@@ -678,14 +692,15 @@ pub fn parse_tuic(raw_url: &str) -> Result<ProxyNode> {
         .port()
         .ok_or_else(|| AppError::InvalidProxy("tuic: missing port".into()))?;
 
-    let uuid = url.username().to_string();
-    let token = url.password().unwrap_or("").to_string();
+    let uuid = decode_userinfo(url.username());
+    let token = decode_userinfo(url.password().unwrap_or(""));
     if uuid.is_empty() || token.is_empty() {
         return Err(AppError::InvalidProxy("tuic: missing uuid or token".into()));
     }
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "tuic"));
+    let name = name.replace('+', " ");
 
     let sni = params.get("sni").or(params.get("servername")).cloned();
     let skip_cert_verify = params
@@ -725,8 +740,9 @@ pub fn parse_snell(raw_url: &str) -> Result<ProxyNode> {
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "snell"));
+    let name = name.replace('+', " ");
 
-    let psk = url.username().to_string();
+    let psk = decode_userinfo(url.username());
     let psk = if psk.is_empty() {
         params.get("psk").cloned().unwrap_or_default()
     } else {
@@ -761,8 +777,9 @@ pub fn parse_anytls(raw_url: &str) -> Result<ProxyNode> {
 
     let params = parse_query_params(&url);
     let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "anytls"));
+    let name = name.replace('+', " ");
 
-    let password = url.username().to_string();
+    let password = decode_userinfo(url.username());
     let password = if password.is_empty() {
         params.get("password").cloned().unwrap_or_default()
     } else {
@@ -1029,5 +1046,36 @@ mod tests {
         } else {
             panic!("expected VMess");
         }
+    }
+
+    #[test]
+    fn test_vless_name_plus_to_space() {
+        let node = parse_vless("vless://uuid@1.2.3.4:443?security=tls&sni=test.com&type=ws&path=/test#United+States").unwrap();
+        assert!(!node.name().contains('+'), "VLESS name should not contain '+': {}", node.name());
+        assert!(node.name().contains("United States"), "VLESS name should have space: {}", node.name());
+    }
+
+    #[test]
+    fn test_trojan_name_plus_to_space() {
+        let node = parse_trojan("trojan://password@1.2.3.4:443?security=tls&sni=test.com#Hong+Kong").unwrap();
+        assert!(!node.name().contains('+'), "Trojan name should not contain '+': {}", node.name());
+        assert!(node.name().contains("Hong Kong"), "Trojan name should have space: {}", node.name());
+    }
+
+    #[test]
+    fn test_trojan_password_percent_decoded() {
+        let node = parse_trojan("trojan://my%2Fpassword%23test@1.2.3.4:443?security=tls#test").unwrap();
+        if let ProxyNode::Trojan(c) = node {
+            assert_eq!(c.password, "my/password#test", "Trojan password should be percent-decoded: {}", c.password);
+        } else {
+            panic!("expected Trojan");
+        }
+    }
+
+    #[test]
+    fn test_tuic_name_plus_to_space() {
+        let node = parse_tuic("tuic://uuid:token@1.2.3.4:443?sni=test.com#South+Korea").unwrap();
+        assert!(!node.name().contains('+'), "TUIC name should not contain '+': {}", node.name());
+        assert!(node.name().contains("South Korea"), "TUIC name should have space: {}", node.name());
     }
 }
