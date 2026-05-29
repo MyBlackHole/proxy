@@ -96,11 +96,18 @@ fn extract_rss_content(xml: &str) -> Vec<String> {
             .unwrap_or(s)
     };
 
-    if let Ok(re) = Regex::new(r"(?s)<item>(.*?)</item>") {
+    let re_item = Regex::new(r"(?s)<item>(.*?)</item>").ok();
+    let re_desc = Regex::new(r"(?s)<description[^>]*>(.*?)</description>").ok();
+    let re_cencoded = Regex::new(r"(?s)<content:encoded[^>]*>(.*?)</content:encoded>").ok();
+    let re_entry = Regex::new(r"(?s)<entry>(.*?)</entry>").ok();
+    let re_content = Regex::new(r"(?s)<content[^>]*>(.*?)</content>").ok();
+    let re_summary = Regex::new(r"(?s)<summary[^>]*>(.*?)</summary>").ok();
+
+    if let Some(ref re) = re_item {
         for cap in re.captures_iter(xml) {
             if let Some(item_xml) = cap.get(1) {
                 let item_str = item_xml.as_str();
-                if let Ok(desc_re) = Regex::new(r"(?s)<description[^>]*>(.*?)</description>") {
+                if let Some(ref desc_re) = re_desc {
                     for desc_cap in desc_re.captures_iter(item_str) {
                         if let Some(desc) = desc_cap.get(1) {
                             let text = desc.as_str().trim();
@@ -110,7 +117,7 @@ fn extract_rss_content(xml: &str) -> Vec<String> {
                         }
                     }
                 }
-                if let Ok(ce_re) = Regex::new(r"(?s)<content:encoded[^>]*>(.*?)</content:encoded>") {
+                if let Some(ref ce_re) = re_cencoded {
                     for ce_cap in ce_re.captures_iter(item_str) {
                         if let Some(ce) = ce_cap.get(1) {
                             let text = ce.as_str().trim();
@@ -124,11 +131,11 @@ fn extract_rss_content(xml: &str) -> Vec<String> {
         }
     }
 
-    if let Ok(re) = Regex::new(r"(?s)<entry>(.*?)</entry>") {
+    if let Some(ref re) = re_entry {
         for cap in re.captures_iter(xml) {
             if let Some(entry_xml) = cap.get(1) {
                 let entry_str = entry_xml.as_str();
-                if let Ok(ct_re) = Regex::new(r"(?s)<content[^>]*>(.*?)</content>") {
+                if let Some(ref ct_re) = re_content {
                     for ct_cap in ct_re.captures_iter(entry_str) {
                         if let Some(content) = ct_cap.get(1) {
                             let text = content.as_str().trim();
@@ -138,7 +145,7 @@ fn extract_rss_content(xml: &str) -> Vec<String> {
                         }
                     }
                 }
-                if let Ok(sm_re) = Regex::new(r"(?s)<summary[^>]*>(.*?)</summary>") {
+                if let Some(ref sm_re) = re_summary {
                     for sm_cap in sm_re.captures_iter(entry_str) {
                         if let Some(summary) = sm_cap.get(1) {
                             let text = summary.as_str().trim();
