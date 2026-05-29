@@ -694,6 +694,14 @@ pub struct CustomGroupConfig {
     #[serde(default)]
     pub proxies: Vec<String>,
 
+    /// Reference proxy-providers by name (subconverter-style `use:` field)
+    ///
+    /// When set, the group will include `use:` in its definition instead of
+    /// (or in addition to) `proxies:`. Proxy-providers must be defined in
+    /// the template or auto-generated.
+    #[serde(default)]
+    pub use_providers: Vec<String>,
+
     /// Health-check URL (required for url-test / fallback)
     pub url: Option<String>,
 
@@ -727,16 +735,26 @@ pub struct RulesetConfig {
     /// Target policy group (e.g. "Proxy", "DIRECT", "REJECT")
     pub group: String,
 
-    /// URL of the rule set file (Surge / Clash / Quantumult X format)
+    /// URL or local file path of the rule set file (Surge / Clash / Quantumult X format)
+    ///
+    /// If the value starts with `http://` or `https://`, it's fetched via HTTP.
+    /// Otherwise it's treated as a local file path.
     pub url: String,
 
-    /// Refresh interval in seconds
+    /// Refresh interval in seconds (HTTP rulesets only)
     #[serde(default = "default_ruleset_interval")]
     pub interval: u64,
 
     /// Explicit behavior: "domain", "ipcidr", "classical" (auto-detect if None)
     #[serde(default)]
     pub behavior: Option<String>,
+}
+
+impl RulesetConfig {
+    /// Returns true if this ruleset refers to a remote URL
+    pub fn is_remote(&self) -> bool {
+        self.url.starts_with("http://") || self.url.starts_with("https://")
+    }
 }
 
 fn default_ruleset_interval() -> u64 { 86400 }
@@ -754,7 +772,87 @@ pub struct TemplateConfig {
     /// Maximum number of inline rules before auto-converting to rule-provider
     #[serde(default = "default_provider_threshold")]
     pub provider_threshold: usize,
+
+    /// Auto-generate proxy-providers from domain subscription sources
+    ///
+    /// When enabled, proxies are grouped by their source domain name and
+    /// each group becomes a proxy-provider entry. Groups can then reference
+    /// the provider via the `use:` field instead of listing all proxies inline.
+    #[serde(default)]
+    pub auto_proxy_providers: bool,
+
+    /// Explicit proxy-provider definitions (subconverter-style)
+    ///
+    /// Each provider maps to a remote subscription URL. Groups reference
+    /// providers by name using the `use:` field.
+    #[serde(default)]
+    pub proxy_providers: Vec<ProxyProviderConfig>,
+
+    /// Additional Clash config key-value overrides (subconverter-style config add)
+    ///
+    /// These are merged into the final output AFTER the template is loaded,
+    /// allowing you to set or override any Clash config field without
+    /// creating a full template file.
+    ///
+    /// Example in TOML:
+    /// ```toml
+    /// [groups.free.template.overrides]
+    /// port = 9999
+    /// "socks-port" = 9998
+    /// "external-controller" = "0.0.0.0:9090"
+    /// "ipv6" = true
+    /// ```
+    #[serde(default)]
+    pub overrides: Option<std::collections::HashMap<String, toml::Value>>,
 }
+
+/// A single proxy provider definition — aligns with subconverter's proxy-provider format.
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProxyProviderConfig {
+    /// Provider name (referenced by groups via `use:`)
+    pub name: String,
+
+    /// Provider type: "http" for remote URL, "file" for local path
+    #[serde(default = "default_provider_type")]
+    pub provider_type: String,
+
+    /// Remote subscription URL (required for type: http)
+    pub url: Option<String>,
+
+    /// Local cache path for the provider data
+    #[serde(default = "default_provider_path")]
+    pub path: String,
+
+    /// Refresh interval in seconds
+    #[serde(default = "default_provider_interval")]
+    pub interval: u64,
+
+    /// Health-check configuration
+    #[serde(default)]
+    pub health_check: Option<ProviderHealthCheck>,
+}
+
+fn default_provider_type() -> String { "http".to_string() }
+fn default_provider_path() -> String { "./proxy_providers/".to_string() }
+fn default_provider_interval() -> u64 { 86400 }
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProviderHealthCheck {
+    /// Enable health check for this provider
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    /// Health check URL
+    #[serde(default = "default_health_check_url")]
+    pub url: String,
+
+    /// Health check interval in seconds
+    #[serde(default = "default_health_check_interval")]
+    pub interval: u64,
+}
+
+fn default_health_check_url() -> String { "https://www.gstatic.com/generate_204".to_string() }
+fn default_health_check_interval() -> u64 { 300 }
 
 fn default_provider_threshold() -> usize { 50 }
 

@@ -621,6 +621,7 @@ async fn process_group_smart(
                 rulesets: &group.rulesets,
                 template: group.template.as_ref(),
                 test_url: "https://www.gstatic.com/generate_204",
+                domain_proxies: None,
             };
             builder::build_clash_config(client, gen_cfg).await?
         } else if let Some(ref smart) = group.smart {

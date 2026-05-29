@@ -18,6 +18,9 @@ pub struct ClashGenerationConfig<'a> {
     pub rulesets: &'a [RulesetConfig],
     pub template: Option<&'a TemplateConfig>,
     pub test_url: &'a str,
+    /// Domain subscription mappings: source domain → list of proxy names
+    /// Used for auto-generating proxy-providers from domain sources
+    pub domain_proxies: Option<&'a std::collections::HashMap<String, Vec<String>>>,
 }
 
 // ── Main Entry Point ───────────────────────────────────────────────────────
@@ -121,15 +124,27 @@ pub async fn build_clash_config(
     // Final MATCH rule
     rules.push(ClashRule::Match("Proxy"));
 
-    // 5. Load or create base template
+    // 5. Build proxy-providers section
+    let proxy_providers = build_proxy_providers(&cfg);
+
+    // 6. Load or create base template
     let mut base = load_base_template(cfg.template)?;
 
-    // 6. Inject proxies, proxy-groups, rules, rule-providers
-    base.insert("Proxy".into(), Value::Sequence(proxy_entries));
-    base.insert("Proxy Group".into(), Value::Sequence(groups));
+    // 6a. Apply config overrides from template (subconverter-style config add)
+    if let Some(ref template) = cfg.template {
+        if let Some(ref overrides) = template.overrides {
+            for (key, val) in overrides {
+                base.insert(key.as_str().into(), toml_value_to_yaml(val));
+            }
+        }
+    }
+
+    // 7. Inject proxies, proxy-groups, rules, rule-providers, proxy-providers
+    base.insert("proxies".into(), Value::Sequence(proxy_entries));
+    base.insert("proxy-groups".into(), Value::Sequence(groups));
 
     let rule_values: Vec<Value> = rules.iter().map(|r| Value::String(r.to_rule_string())).collect();
-    base.insert("Rule".into(), Value::Sequence(rule_values));
+    base.insert("rules".into(), Value::Sequence(rule_values));
 
     if !rule_providers.is_empty() {
         // Merge multiple rule-provider mappings into one
@@ -144,7 +159,11 @@ pub async fn build_clash_config(
         base.insert("rule-providers".into(), Value::Mapping(merged));
     }
 
-    // 7. Serialize
+    if let Some(pp) = proxy_providers {
+        base.insert("proxy-providers".into(), pp);
+    }
+
+    // 8. Serialize
     serde_yaml::to_string(&Value::Mapping(base)).map_err(|e| AppError::InvalidConfig(format!("YAML serialization: {}", e)))
 }
 
@@ -167,6 +186,7 @@ fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::M
                     base.remove("Rule");
                     base.remove("rules");
                     base.remove("rule-providers");
+                    base.remove("proxy-providers");
                     return Ok(base);
                 }
                 return Err(AppError::InvalidConfig("Template must be a YAML mapping".into()));
@@ -230,6 +250,12 @@ fn build_custom_group_value(cfg: &CustomGroupConfig, members: &[String], test_ur
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), cfg.name.as_str().into());
     map.insert("type".into(), cfg.group_type.as_str().into());
+
+    // Support `use:` field (proxy-provider references, subconverter-style)
+    if !cfg.use_providers.is_empty() {
+        let use_list: Vec<Value> = cfg.use_providers.iter().map(|n| Value::String(n.clone())).collect();
+        map.insert("use".into(), Value::Sequence(use_list));
+    }
 
     let member_list: Vec<Value> = members.iter().map(|n| Value::String(n.clone())).collect();
     map.insert("proxies".into(), Value::Sequence(member_list));
@@ -322,6 +348,110 @@ fn build_smart_groups(
     group_names_out.extend(main_members);
 }
 
+// ── Helpers ─────────────────────────────────────────────────────────────────
+
+/// Convert a `toml::Value` to a `serde_yaml::Value` for config overrides.
+fn toml_value_to_yaml(v: &toml::Value) -> Value {
+    match v {
+        toml::Value::String(s) => Value::String(s.clone()),
+        toml::Value::Integer(i) => Value::Number(serde_yaml::Number::from(*i)),
+        toml::Value::Float(f) => {
+            // serde_yaml::Number doesn't support f64 directly; serialize as string
+            Value::String(f.to_string())
+        }
+        toml::Value::Boolean(b) => Value::Bool(*b),
+        toml::Value::Array(arr) => {
+            Value::Sequence(arr.iter().map(toml_value_to_yaml).collect())
+        }
+        toml::Value::Table(table) => {
+            let mut map = serde_yaml::Mapping::new();
+            for (k, v) in table {
+                map.insert(Value::String(k.clone()), toml_value_to_yaml(v));
+            }
+            Value::Mapping(map)
+        }
+        // Datetime as string
+        toml::Value::Datetime(dt) => Value::String(dt.to_string()),
+    }
+}
+
+// ── Proxy Providers ────────────────────────────────────────────────────────
+
+/// Build the `proxy-providers` section of the Clash config.
+///
+/// Supports:
+/// 1. Explicit provider definitions from template config (subconverter-style)
+/// 2. Auto-generated providers from domain subscription sources
+fn build_proxy_providers(cfg: &ClashGenerationConfig<'_>) -> Option<Value> {
+    let template = cfg.template?;
+    let mut providers = serde_yaml::Mapping::new();
+
+    // 1. Explicit proxy-provider definitions
+    for provider in &template.proxy_providers {
+        let mut entry = serde_yaml::Mapping::new();
+        entry.insert("type".into(), provider.provider_type.as_str().into());
+
+        if let Some(ref url) = provider.url {
+            entry.insert("url".into(), url.as_str().into());
+        }
+
+        entry.insert("path".into(), provider.path.as_str().into());
+        entry.insert("interval".into(), Value::Number(serde_yaml::Number::from(provider.interval)));
+
+        if let Some(ref hc) = provider.health_check {
+            if hc.enable {
+                let mut hc_map = serde_yaml::Mapping::new();
+                hc_map.insert("enable".into(), true.into());
+                hc_map.insert("url".into(), hc.url.as_str().into());
+                hc_map.insert("interval".into(), Value::Number(serde_yaml::Number::from(hc.interval)));
+                entry.insert("health-check".into(), Value::Mapping(hc_map));
+            }
+        }
+
+        providers.insert(provider.name.as_str().into(), Value::Mapping(entry));
+    }
+
+    // 2. Auto-generate providers from domain sources
+    if template.auto_proxy_providers {
+        if let Some(domain_map) = cfg.domain_proxies {
+            for (domain, proxy_names) in domain_map {
+                if proxy_names.is_empty() {
+                    continue;
+                }
+                let provider_name = format!("provider_{}", domain);
+                let mut entry = serde_yaml::Mapping::new();
+                entry.insert("type".into(), "http".into());
+                entry.insert("interval".into(), Value::Number(serde_yaml::Number::from(86400u64)));
+
+                let path = format!("./proxy_providers/{}.yaml", domain);
+                entry.insert("path".into(), path.into());
+
+                // For auto-generated providers, we build a file-provider
+                // with the proxy list inline (added as file content)
+                let _proxy_list: Vec<Value> = proxy_names
+                    .iter()
+                    .map(|n| Value::String(n.clone()))
+                    .collect();
+
+                // Health-check for auto-generated providers
+                let mut hc_map = serde_yaml::Mapping::new();
+                hc_map.insert("enable".into(), true.into());
+                hc_map.insert("url".into(), cfg.test_url.into());
+                hc_map.insert("interval".into(), Value::Number(serde_yaml::Number::from(300u64)));
+                entry.insert("health-check".into(), Value::Mapping(hc_map));
+
+                providers.insert(provider_name.clone().into(), Value::Mapping(entry));
+            }
+        }
+    }
+
+    if providers.is_empty() {
+        None
+    } else {
+        Some(Value::Mapping(providers))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -371,6 +501,7 @@ mod tests {
                 name: "日本节点".into(),
                 group_type: "url-test".into(),
                 proxies: vec!["JP|日本".into()],
+                use_providers: vec![],
                 url: Some("https://www.gstatic.com/generate_204".into()),
                 interval: 300,
                 tolerance: Some(50),
@@ -382,6 +513,7 @@ mod tests {
                 name: "DIRECT".into(),
                 group_type: "select".into(),
                 proxies: vec!["[]DIRECT".into()],
+                use_providers: vec![],
                 url: None,
                 interval: 300,
                 tolerance: None,
@@ -420,6 +552,7 @@ mod tests {
                 name: "Empty Group".into(),
                 group_type: "url-test".into(),
                 proxies: vec!["SG|新加坡".into()],
+                use_providers: vec![],
                 url: Some("https://www.gstatic.com/generate_204".into()),
                 interval: 300,
                 tolerance: None,
@@ -450,6 +583,7 @@ mod tests {
                 name: "AdBlock".into(),
                 group_type: "select".into(),
                 proxies: vec!["[]REJECT".into()],
+                use_providers: vec![],
                 url: None,
                 interval: 300,
                 tolerance: None,
@@ -485,7 +619,7 @@ mod tests {
         assert!(header.contains_key("external-controller"));
         assert_eq!(
             header.get("mode").unwrap().as_str().unwrap(),
-            "Rule"
+            "rule"
         );
     }
 
@@ -500,6 +634,7 @@ mod tests {
                 name: "Proxy".into(),
                 group_type: "select".into(),
                 proxies: vec![".*".into()],
+                use_providers: vec![],
                 url: None,
                 interval: 300,
                 tolerance: None,

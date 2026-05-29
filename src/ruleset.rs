@@ -1,6 +1,8 @@
 use crate::error::*;
 use crate::convert::ClashRule;
 use serde_yaml::{Value, Mapping, Number};
+use std::collections::HashMap;
+use std::sync::Mutex;
 
 /// Parsed result from downloading + converting a rule set
 #[derive(Debug, Clone)]
@@ -15,26 +17,61 @@ pub struct ParsedRuleset {
     pub behavior: String,
 }
 
-/// Downlaod and parse a remote rule set into Clash rules
+/// Simple in-memory cache for fetched rulesets (keyed by URL)
+static RULESET_CACHE: std::sync::LazyLock<Mutex<HashMap<String, ParsedRuleset>>> =
+    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
+
+/// Clear the ruleset cache
+pub fn clear_cache() {
+    if let Ok(mut cache) = RULESET_CACHE.lock() {
+        cache.clear();
+    }
+}
+
+/// Fetch and parse a rule set, supporting both remote URLs and local file paths.
+///
+/// Results are cached in-memory for the duration of the process to avoid
+/// re-downloading the same ruleset multiple times.
 pub async fn fetch_and_parse_ruleset(
     client: &reqwest::Client,
     cfg: &crate::config::RulesetConfig,
 ) -> Result<ParsedRuleset> {
-    let content = fetch_ruleset(client, &cfg.url).await?;
+    // Check cache first
+    {
+        if let Ok(cache) = RULESET_CACHE.lock() {
+            if let Some(cached) = cache.get(&cfg.url) {
+                return Ok(cached.clone());
+            }
+        }
+    }
+
+    let content = if cfg.is_remote() {
+        fetch_remote_ruleset(client, &cfg.url).await?
+    } else {
+        read_local_ruleset(&cfg.url)?
+    };
+
     let rules = parse_ruleset_content(&content)?;
     let behavior = cfg.behavior.clone().unwrap_or_else(|| detect_behavior(&rules));
     let large = rules.len() >= 50;
 
-    Ok(ParsedRuleset {
+    let result = ParsedRuleset {
         group: cfg.group.clone(),
         rules,
         large,
         behavior,
-    })
+    };
+
+    // Cache the result
+    if let Ok(mut cache) = RULESET_CACHE.lock() {
+        cache.insert(cfg.url.clone(), result.clone());
+    }
+
+    Ok(result)
 }
 
 /// Download ruleset content from a URL
-async fn fetch_ruleset(client: &reqwest::Client, url: &str) -> Result<String> {
+async fn fetch_remote_ruleset(client: &reqwest::Client, url: &str) -> Result<String> {
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
         return Err(AppError::Network(format!(
@@ -43,6 +80,12 @@ async fn fetch_ruleset(client: &reqwest::Client, url: &str) -> Result<String> {
     }
     let text = resp.text().await?;
     Ok(text)
+}
+
+/// Read ruleset content from a local file
+fn read_local_ruleset(path: &str) -> Result<String> {
+    std::fs::read_to_string(path)
+        .map_err(|e| AppError::InvalidConfig(format!("Cannot read ruleset file '{}': {}", path, e)))
 }
 
 /// Parse ruleset content (Surge / Clash / Quantumult X) into uniform ClashRule vec
