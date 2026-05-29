@@ -1,4 +1,7 @@
+use std::sync::Arc;
+
 use regex::Regex;
+use tokio::sync::Semaphore;
 
 use super::extract_subscribes;
 use super::build_crawl_client;
@@ -9,7 +12,8 @@ pub async fn crawl_rss(
     config: &RssCrawlConfig,
     settings: &SettingsConfig,
 ) -> Vec<String> {
-    if config.urls.is_empty() {
+    let urls = &config.urls;
+    if urls.is_empty() {
         return Vec::new();
     }
 
@@ -21,44 +25,57 @@ pub async fn crawl_rss(
         }
     };
 
-    let mut results: Vec<String> = Vec::new();
-    let mut processed: usize = 0;
+    let sem = Arc::new(Semaphore::new(5));
+    let mut handles = Vec::with_capacity(urls.len());
 
-    for url in &config.urls {
-        if processed >= config.limit {
-            break;
-        }
+    for url in urls {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let url = url.clone();
 
-        let resp = match client.get(url).send().await {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                log::warn!("[rss] feed {} returned HTTP {}", url, r.status());
-                continue;
+        handles.push(tokio::spawn(async move {
+            let _guard = permit;
+            log::debug!("[rss] GET feed: {}", url);
+            let resp = match client.get(&url).send().await {
+                Ok(r) if r.status().is_success() => r,
+                Ok(r) => {
+                    log::warn!("[rss] feed {} returned HTTP {}", url, r.status());
+                    return Vec::new();
+                }
+                Err(e) => {
+                    log::warn!("[rss] failed to fetch feed {}: {}", url, e);
+                    return Vec::new();
+                }
+            };
+
+            let body = match resp.text().await {
+                Ok(t) => t,
+                Err(e) => {
+                    log::warn!("[rss] failed to read body from {}: {}", url, e);
+                    return Vec::new();
+                }
+            };
+
+            let content_fields = extract_rss_content(&body);
+            let mut feed_results = Vec::new();
+            for field in &content_fields {
+                feed_results.extend(extract_subscribes(field));
             }
-            Err(e) => {
-                log::warn!("[rss] failed to fetch feed {}: {}", url, e);
-                continue;
-            }
-        };
+            feed_results
+        }));
+    }
 
-        let body = match resp.text().await {
-            Ok(t) => t,
-            Err(e) => {
-                log::warn!("[rss] failed to read body from {}: {}", url, e);
-                continue;
-            }
-        };
-
-        let content_fields = extract_rss_content(&body);
-        for field in &content_fields {
-            results.extend(extract_subscribes(field));
-            processed += 1;
-            if processed >= config.limit {
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(urls) = handle.await {
+            results.extend(urls);
+            if results.len() >= config.limit {
                 break;
             }
         }
     }
 
+    results.truncate(config.limit);
     results.sort();
     results.dedup();
     results

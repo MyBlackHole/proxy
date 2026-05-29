@@ -149,6 +149,48 @@ pub async fn fetch_and_parse(url: &str, proxy: Option<&str>) -> Result<Vec<Strin
     Ok(links)
 }
 
+/// Fetch subscription using a pre-configured shared client (no proxy applied).
+/// Includes caching logic matching `fetch_subscription`.
+pub async fn fetch_with_client(client: &reqwest::Client, url: &str) -> Result<String> {
+    // Check persistent cache first
+    if let Some(cached) = crate::cache::get(crate::cache::CacheKind::Subscription, url) {
+        log::info!("Cache hit for subscription: {}", url);
+        return Ok(cached);
+    }
+
+    let result = async {
+        let resp = client.get(url).send().await?;
+        // Capture Subscription-UserInfo header before consuming the response
+        if let Some(header) = resp.headers().get("subscription-userinfo")
+            && let Ok(val) = header.to_str()
+            && !val.is_empty() {
+                crate::userinfo::capture(url, val);
+            }
+        Ok(resp.text().await?)
+    }.await;
+
+    // On success, store in cache
+    if let Ok(ref data) = result {
+        crate::cache::set(crate::cache::CacheKind::Subscription, url, data);
+    }
+    // On failure, serve stale cache if configured
+    else if crate::cache::is_enabled()
+        && let Some(stale) = crate::cache::get_stale(crate::cache::CacheKind::Subscription, url) {
+            log::warn!("Subscription fetch failed, serving stale cache: {}", url);
+            return Ok(stale);
+        }
+
+    result
+}
+
+/// Fetch and parse subscription using a pre-configured shared client (no proxy).
+pub async fn fetch_and_parse_with_client(client: &reqwest::Client, url: &str) -> Result<Vec<String>> {
+    let content = fetch_with_client(client, url).await?;
+    let format = detect_format(content.as_bytes());
+    let links = extract_links(&content, format);
+    Ok(links)
+}
+
 fn is_proxy_link(s: &str) -> bool {
     PROXY_SCHEMES.iter().any(|scheme| s.trim().starts_with(scheme))
 }

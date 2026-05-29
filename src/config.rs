@@ -670,6 +670,10 @@ pub struct GithubCrawlConfig {
     #[serde(default = "default_true")]
     pub search_files: bool,
 
+    /// GitHub API token (optional). Falls back to GITHUB_TOKEN env var if not set.
+    #[serde(default)]
+    pub token: String,
+
     #[serde(default)]
     pub users: HashMap<String, GithubUserConfig>,
 

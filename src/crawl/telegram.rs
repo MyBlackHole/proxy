@@ -1,4 +1,8 @@
+use std::sync::Arc;
+
 use regex::Regex;
+use tokio::sync::Semaphore;
+
 use crate::error::*;
 
 use super::extract_subscribes;
@@ -13,15 +17,31 @@ pub async fn crawl_telegram(client: &reqwest::Client, channel: &str, pages: usiz
         let mut values: Vec<i64> = (0..=page_count).rev().step_by(100).collect();
         values.truncate(pages);
 
-        let mut results = Vec::new();
+        let sem = Arc::new(Semaphore::new(10));
+        let mut handles = Vec::with_capacity(values.len());
         for before in values {
-            let url = format!("https://t.me/s/{}?before={}", channel, before);
-            if let Ok(resp) = client.get(&url).send().await
-                && let Ok(text) = resp.text().await {
-                    results.extend(extract_subscribes(&text));
-                }
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let client = client.clone();
+            let channel = channel.to_string();
+            handles.push(tokio::spawn(async move {
+                let _guard = permit;
+                let url = format!("https://t.me/s/{}?before={}", channel, before);
+                log::debug!("[crawl_telegram] GET page before={}: {}", before, url);
+                if let Ok(resp) = client.get(&url).send().await
+                    && let Ok(text) = resp.text().await {
+                        extract_subscribes(&text)
+                    } else {
+                        Vec::new()
+                    }
+            }));
         }
 
+        let mut results = Vec::new();
+        for handle in handles {
+            if let Ok(urls) = handle.await {
+                results.extend(urls);
+            }
+        }
         results.sort();
         results.dedup();
         return Ok(results);
@@ -73,12 +93,29 @@ pub async fn crawl_telegram_history(
                     .take(extra_pages)
                     .collect();
 
-                for before in values {
-                    let url = format!("https://t.me/s/{}?before={}", channel, before);
-                    if let Ok(resp) = client.get(&url).send().await
-                        && let Ok(text) = resp.text().await
-                    {
-                        results.extend(extract_subscribes(&text));
+                if !values.is_empty() {
+                    let sem = Arc::new(Semaphore::new(10));
+                    let mut handles = Vec::with_capacity(values.len());
+                    for before in values {
+                        let permit = sem.clone().acquire_owned().await.unwrap();
+                        let client = client.clone();
+                        let channel = channel.to_string();
+                        handles.push(tokio::spawn(async move {
+                            let _guard = permit;
+                            let url = format!("https://t.me/s/{}?before={}", channel, before);
+                            log::debug!("[crawl_telegram_history] GET page before={}: {}", before, url);
+                            if let Ok(resp) = client.get(&url).send().await
+                                && let Ok(text) = resp.text().await {
+                                    extract_subscribes(&text)
+                                } else {
+                                    Vec::new()
+                                }
+                        }));
+                    }
+                    for handle in handles {
+                        if let Ok(urls) = handle.await {
+                            results.extend(urls);
+                        }
                     }
                 }
             }
@@ -99,22 +136,48 @@ pub async fn crawl_telegram_search(
         return Ok(Vec::new());
     }
 
-    let mut results = Vec::new();
+    let sem = Arc::new(Semaphore::new(10));
+    let mut handles = Vec::with_capacity(pages * 2);
 
     for page in 0..pages {
         if page == 0 {
-            let url = format!("https://t.me/search?q={}", urlencoding(query));
-            if let Ok(resp) = client.get(&url).send().await
-                && let Ok(text) = resp.text().await {
-                    results.extend(extract_subscribes(&text));
-                }
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let client = client.clone();
+            let encoded = urlencoding(query);
+            handles.push(tokio::spawn(async move {
+                let _guard = permit;
+                let url = format!("https://t.me/search?q={}", encoded);
+                log::debug!("[crawl_telegram_search] GET search page 0: {}", url);
+                if let Ok(resp) = client.get(&url).send().await
+                    && let Ok(text) = resp.text().await {
+                        extract_subscribes(&text)
+                    } else {
+                        Vec::new()
+                    }
+            }));
         }
 
-        let search_url = format!("https://t.me/search?q={}&page={}", urlencoding(query), page);
-        if let Ok(resp) = client.get(&search_url).send().await
-            && let Ok(text) = resp.text().await {
-                results.extend(extract_subscribes(&text));
-            }
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let encoded = urlencoding(query);
+        handles.push(tokio::spawn(async move {
+            let _guard = permit;
+            let url = format!("https://t.me/search?q={}&page={}", encoded, page);
+            log::debug!("[crawl_telegram_search] GET search page {}: {}", page, url);
+            if let Ok(resp) = client.get(&url).send().await
+                && let Ok(text) = resp.text().await {
+                    extract_subscribes(&text)
+                } else {
+                    Vec::new()
+                }
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in handles {
+        if let Ok(urls) = handle.await {
+            results.extend(urls);
+        }
     }
 
     results.sort();

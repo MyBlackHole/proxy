@@ -1,3 +1,7 @@
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
+
 use super::extract_subscribes;
 use super::build_crawl_client;
 use crate::config::DiscordCrawlConfig;
@@ -19,76 +23,124 @@ pub async fn crawl_discord(
         }
     };
 
-    let mut results: Vec<String> = Vec::new();
+    let channel_config = config.channels.clone();
+    let bot_token = config.bot_token.clone();
+    let limit = config.limit;
 
-    for channel_id in &config.channels {
-        let url = format!(
-            "https://discord.com/api/v10/channels/{}/messages?limit={}",
-            channel_id, config.limit
-        );
+    let sem = Arc::new(Semaphore::new(5));
+    let mut channel_handles = Vec::with_capacity(channel_config.len());
 
-        let resp = match client
-            .get(&url)
-            .header("Authorization", format!("Bot {}", config.bot_token))
-            .header("User-Agent", "DiscordBot (proxy-collector, 0.1.0)")
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => r,
-            Ok(r) => {
-                log::warn!("[discord] channel {} returned HTTP {}", channel_id, r.status());
-                continue;
-            }
-            Err(e) => {
-                log::warn!("[discord] failed to fetch channel {}: {}", channel_id, e);
-                continue;
-            }
-        };
+    for channel_id in channel_config {
+        let permit = sem.clone().acquire_owned().await.unwrap();
+        let client = client.clone();
+        let bot_token = bot_token.clone();
 
-        let messages: Vec<serde_json::Value> = match resp.json().await {
-            Ok(v) => v,
-            Err(e) => {
-                log::warn!("[discord] failed to parse messages for channel {}: {}", channel_id, e);
-                continue;
-            }
-        };
+        channel_handles.push(tokio::spawn(async move {
+            let _guard = permit;
+            let url = format!(
+                "https://discord.com/api/v10/channels/{}/messages?limit={}",
+                channel_id, limit
+            );
+            log::debug!("[discord] GET channel: {}", url);
 
-        for msg in &messages {
-            if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                results.extend(extract_subscribes(content));
-            }
+            let resp = match client
+                .get(&url)
+                .header("Authorization", format!("Bot {}", bot_token))
+                .header("User-Agent", "DiscordBot (proxy-collector, 0.1.0)")
+                .send()
+                .await
+            {
+                Ok(r) if r.status().is_success() => r,
+                Ok(r) => {
+                    log::warn!("[discord] channel {} returned HTTP {}", channel_id, r.status());
+                    return Vec::new();
+                }
+                Err(e) => {
+                    log::warn!("[discord] failed to fetch channel {}: {}", channel_id, e);
+                    return Vec::new();
+                }
+            };
 
-            if let Some(embeds) = msg.get("embeds").and_then(|v| v.as_array()) {
-                for embed in embeds {
-                    if let Some(desc) = embed.get("description").and_then(|v| v.as_str()) {
-                        results.extend(extract_subscribes(desc));
-                    }
-                    if let Some(title) = embed.get("title").and_then(|v| v.as_str()) {
-                        results.extend(extract_subscribes(title));
-                    }
-                    if let Some(fields) = embed.get("fields").and_then(|v| v.as_array()) {
-                        for field in fields {
-                            if let Some(value) = field.get("value").and_then(|v| v.as_str()) {
-                                results.extend(extract_subscribes(value));
+            let messages: Vec<serde_json::Value> = match resp.json().await {
+                Ok(v) => v,
+                Err(e) => {
+                    log::warn!("[discord] failed to parse messages for channel {}: {}", channel_id, e);
+                    return Vec::new();
+                }
+            };
+
+            let mut channel_results = Vec::new();
+
+            for msg in &messages {
+                if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
+                    channel_results.extend(extract_subscribes(content));
+                }
+
+                if let Some(embeds) = msg.get("embeds").and_then(|v| v.as_array()) {
+                    for embed in embeds {
+                        if let Some(desc) = embed.get("description").and_then(|v| v.as_str()) {
+                            channel_results.extend(extract_subscribes(desc));
+                        }
+                        if let Some(title) = embed.get("title").and_then(|v| v.as_str()) {
+                            channel_results.extend(extract_subscribes(title));
+                        }
+                        if let Some(fields) = embed.get("fields").and_then(|v| v.as_array()) {
+                            for field in fields {
+                                if let Some(value) = field.get("value").and_then(|v| v.as_str()) {
+                                    channel_results.extend(extract_subscribes(value));
+                                }
                             }
+                        }
+                    }
+                }
+
+                // Concurrent attachment fetching per message
+                if let Some(attachments) = msg.get("attachments").and_then(|v| v.as_array())
+                    && !attachments.is_empty()
+                {
+                    let attach_sem = Arc::new(Semaphore::new(10));
+                    let mut att_handles = Vec::with_capacity(attachments.len());
+                    for attachment in attachments {
+                        let permit = match attach_sem.clone().acquire_owned().await {
+                            Ok(p) => p,
+                            Err(_) => break,
+                        };
+                        let client = client.clone();
+                        if let Some(url_str) = attachment.get("url").and_then(|v| v.as_str()) {
+                            if url_str.ends_with(".txt") || url_str.ends_with(".yaml")
+                                || url_str.ends_with(".yml") || url_str.ends_with(".conf")
+                            {
+                                let url = url_str.to_string();
+                                att_handles.push(tokio::spawn(async move {
+                                    let _p = permit;
+                                    log::debug!("[discord] GET attachment: {}", url);
+                                    if let Ok(resp) = client.get(&url).send().await
+                                        && let Ok(text) = resp.text().await
+                                    {
+                                        extract_subscribes(&text)
+                                    } else {
+                                        Vec::new()
+                                    }
+                                }));
+                            }
+                        }
+                    }
+                    for h in att_handles {
+                        if let Ok(urls) = h.await {
+                            channel_results.extend(urls);
                         }
                     }
                 }
             }
 
-            if let Some(attachments) = msg.get("attachments").and_then(|v| v.as_array()) {
-                for attachment in attachments {
-                    if let Some(url_str) = attachment.get("url").and_then(|v| v.as_str()) {
-                        if (url_str.ends_with(".txt") || url_str.ends_with(".yaml")
-                            || url_str.ends_with(".yml") || url_str.ends_with(".conf"))
-                            && let Ok(resp) = client.get(url_str).send().await
-                                && let Ok(text) = resp.text().await
-                            {
-                                results.extend(extract_subscribes(&text));
-                            }
-                    }
-                }
-            }
+            channel_results
+        }));
+    }
+
+    let mut results = Vec::new();
+    for handle in channel_handles {
+        if let Ok(urls) = handle.await {
+            results.extend(urls);
         }
     }
 

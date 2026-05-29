@@ -1,4 +1,7 @@
 use std::collections::HashMap;
+use std::sync::Arc;
+
+use tokio::sync::Semaphore;
 
 use crate::error::Result;
 
@@ -44,14 +47,18 @@ pub async fn batch_geo_query(
     client: &reqwest::Client,
     ips: &[String],
 ) -> Result<HashMap<String, GeoInfo>> {
-    let mut handles = Vec::new();
+    let sem = Arc::new(Semaphore::new(20));
+    let mut handles = Vec::with_capacity(ips.len());
     for ip in ips {
+        let permit = sem.clone().acquire_owned().await.unwrap();
         let c = client.clone();
         let ip = ip.clone();
         handles.push(tokio::spawn(async move {
+            let _guard = permit;
             (ip.clone(), query_ip_location(&c, &ip).await)
         }));
     }
+    drop(sem);
 
     let mut map = HashMap::new();
     for handle in handles {

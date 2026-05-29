@@ -1,5 +1,8 @@
+use std::sync::Arc;
+
 use rand::Rng;
 use regex::Regex;
+use tokio::sync::Semaphore;
 use std::time::Duration;
 
 use crate::error::*;
@@ -254,21 +257,41 @@ impl TempMail {
                 let data: serde_json::Value = resp.json().await?;
                 let members = data.get("hydra:member").and_then(|v| v.as_array())
                     .ok_or_else(|| AppError::InvalidConfig("no messages".to_string()))?;
-                let mut messages = Vec::new();
+                let sem = Arc::new(Semaphore::new(10));
+                let mut msg_handles = Vec::with_capacity(members.len());
                 for item in members {
-                    let msg_id = item.get("id").and_then(|v| v.as_str()).unwrap_or("");
-                    let resp = client.get(format!("https://api.mail.tm/messages/{}", msg_id))
-                        .header("Accept", "application/ld+json")
-                        .header("Authorization", format!("Bearer {}", token))
-                        .send()
-                        .await?;
-                    let detail: serde_json::Value = resp.json().await?;
-                    let from = detail.get("from").and_then(|v| v.get("address"))
-                        .and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let subject = detail.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let text = detail.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
-                    let html = detail.get("html").and_then(|v| v.as_str()).map(|s| s.to_string());
-                    messages.push(TempMessage { from, subject, body: text, html_body: html });
+                    let permit = sem.clone().acquire_owned().await.unwrap();
+                    let client = client.clone();
+                    let token = token.clone();
+                    let msg_id = item.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_default();
+                    if msg_id.is_empty() { continue; }
+                    msg_handles.push(tokio::spawn(async move {
+                        let _guard = permit;
+                        let detail_url = format!("https://api.mail.tm/messages/{}", msg_id);
+                        log::debug!("[mailtm] GET message detail: {}", detail_url);
+                        if let Ok(resp) = client.get(&detail_url)
+                            .header("Accept", "application/ld+json")
+                            .header("Authorization", format!("Bearer {}", token))
+                            .send()
+                            .await
+                            && let Ok(detail) = resp.json::<serde_json::Value>().await
+                        {
+                            let from = detail.get("from").and_then(|v| v.get("address"))
+                                .and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let subject = detail.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let text = detail.get("text").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                            let html = detail.get("html").and_then(|v| v.as_str()).map(|s| s.to_string());
+                            Some(TempMessage { from, subject, body: text, html_body: html })
+                        } else {
+                            None
+                        }
+                    }));
+                }
+                let mut messages = Vec::new();
+                for handle in msg_handles {
+                    if let Some(msg) = handle.await.unwrap_or(None) {
+                        messages.push(msg);
+                    }
                 }
                 Ok(messages)
             }
@@ -288,26 +311,45 @@ impl TempMail {
                 }
                 let mails = data.get("mail").and_then(|v| v.as_array())
                     .ok_or_else(|| AppError::InvalidConfig("no mail array".to_string()))?;
-                let mut messages = Vec::new();
+                let sem = Arc::new(Semaphore::new(10));
+                let mut mail_handles = Vec::with_capacity(mails.len());
                 for mail in mails {
-                    let arr = mail.as_array().ok_or_else(|| AppError::InvalidConfig("mail not array".to_string()))?;
-                    if arr.len() < 5 { continue; }
-                    let sender = arr[1].as_str().unwrap_or("");
-                    let subject = arr[2].as_str().unwrap_or("");
-                    let mail_id = arr[4].as_str().unwrap_or("");
+                    let arr = match mail.as_array() {
+                        Some(a) if a.len() >= 5 => a,
+                        _ => continue,
+                    };
+                    let permit = sem.clone().acquire_owned().await.unwrap();
+                    let client = client.clone();
+                    let api_address = state.api_address.clone();
                     let address_encoded = account.email.replace("@", "(a)").replace(".", "-_-");
-                    let content_url = format!("{}/win/{}/{}", state.api_address, address_encoded, mail_id);
-                    if let Ok(r) = client.get(&content_url).send().await {
-                        let body = r.text().await.unwrap_or_else(|e| {
-                            log::warn!("Failed to read mail.tm message body {}: {}", content_url, e);
-                            String::new()
-                        });
-                        messages.push(TempMessage {
-                            from: sender.to_string(),
-                            subject: subject.to_string(),
-                            body,
-                            html_body: None,
-                        });
+                    let sender = arr[1].as_str().unwrap_or("").to_string();
+                    let subject = arr[2].as_str().unwrap_or("").to_string();
+                    let mail_id = arr[4].as_str().unwrap_or("").to_string();
+
+                    mail_handles.push(tokio::spawn(async move {
+                        let _guard = permit;
+                        let content_url = format!("{}/win/{}/{}", api_address, address_encoded, mail_id);
+                        log::debug!("[rootsh] GET mail content: {}", content_url);
+                        if let Ok(r) = client.get(&content_url).send().await {
+                            let body = r.text().await.unwrap_or_else(|e| {
+                                log::warn!("Failed to read rootsh message body {}: {}", content_url, e);
+                                String::new()
+                            });
+                            Some(TempMessage {
+                                from: sender,
+                                subject,
+                                body,
+                                html_body: None,
+                            })
+                        } else {
+                            None
+                        }
+                    }));
+                }
+                let mut messages = Vec::new();
+                for handle in mail_handles {
+                    if let Some(msg) = handle.await.unwrap_or(None) {
+                        messages.push(msg);
                     }
                 }
                 Ok(messages)
@@ -345,24 +387,42 @@ impl TempMail {
                 let text = resp.text().await?;
                 let emails: Vec<serde_json::Value> = serde_json::from_str(&text)
                     .unwrap_or_default();
-                let mut messages = Vec::new();
+                let sem = Arc::new(Semaphore::new(10));
+                let mut mail_handles = Vec::with_capacity(emails.len());
                 for email in &emails {
-                    let mail_id = email.get("id").and_then(|v| v.as_str()).unwrap_or("");
+                    let mail_id = email.get("id").and_then(|v| v.as_str()).map(|s| s.to_string()).unwrap_or_default();
                     if mail_id.is_empty() { continue; }
-                    let from = email.get("from").and_then(|v| v.as_str()).unwrap_or("");
-                    let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
-                    let content_url = format!("{}/mailbox/{}/{}", state.api_address, username, mail_id);
-                    if let Ok(r) = client.get(&content_url).send().await {
-                        let body = r.text().await.unwrap_or_else(|e| {
-                            log::warn!("Failed to read linshi message body {}: {}", content_url, e);
-                            String::new()
-                        });
-                        messages.push(TempMessage {
-                            from: from.to_string(),
-                            subject: subject.to_string(),
-                            body,
-                            html_body: None,
-                        });
+                    let permit = sem.clone().acquire_owned().await.unwrap();
+                    let client = client.clone();
+                    let api_address = state.api_address.clone();
+                    let username = username.to_string();
+                    let from = email.get("from").and_then(|v| v.as_str()).unwrap_or("").to_string();
+                    let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("").to_string();
+
+                    mail_handles.push(tokio::spawn(async move {
+                        let _guard = permit;
+                        let content_url = format!("{}/mailbox/{}/{}", api_address, username, mail_id);
+                        log::debug!("[linshi] GET mail content: {}", content_url);
+                        if let Ok(r) = client.get(&content_url).send().await {
+                            let body = r.text().await.unwrap_or_else(|e| {
+                                log::warn!("Failed to read linshi message body {}: {}", content_url, e);
+                                String::new()
+                            });
+                            Some(TempMessage {
+                                from,
+                                subject,
+                                body,
+                                html_body: None,
+                            })
+                        } else {
+                            None
+                        }
+                    }));
+                }
+                let mut messages = Vec::new();
+                for handle in mail_handles {
+                    if let Some(msg) = handle.await.unwrap_or(None) {
+                        messages.push(msg);
                     }
                 }
                 Ok(messages)

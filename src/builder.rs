@@ -1,7 +1,9 @@
 use std::path::Path;
+use std::sync::Arc;
 
 use chrono::Local;
 use regex::Regex;
+use tokio::sync::Semaphore;
 
 use serde_yaml::Value;
 
@@ -135,28 +137,46 @@ pub async fn build_clash_config(
             rules.extend(smart_rules);
         }
 
-    // External rulesets (downloaded and parsed)
+    // External rulesets (downloaded and parsed concurrently)
     let provider_threshold = cfg.template.map(|t| t.provider_threshold).unwrap_or(50);
+    let ruleset_configs: Vec<RulesetConfig> = cfg.rulesets.to_vec();
 
-    for rscfg in cfg.rulesets {
-        match ruleset::fetch_and_parse_ruleset(client, rscfg).await {
-            Ok(parsed) => {
-                if parsed.large && parsed.rules.len() >= provider_threshold {
-                    // Generate rule-provider entry + RULE-SET reference
-                    let pname = format!("provider_{}", rscfg.group);
-                    rule_providers.push(ruleset::generate_rule_provider(
-                        &pname, &rscfg.url, rscfg.interval, &parsed.behavior,
-                    ));
-                    rules.push(ruleset::rule_set_rule(&pname, &parsed.group));
-                } else {
-                    // Inline rules
-                    for rule in &parsed.rules {
-                        rules.push(rule.clone());
+    if !ruleset_configs.is_empty() {
+        let sem = Arc::new(Semaphore::new(5));
+        let mut rs_handles = Vec::with_capacity(ruleset_configs.len());
+
+        for rscfg in ruleset_configs {
+            let permit = sem.clone().acquire_owned().await.unwrap();
+            let client = client.clone();
+            rs_handles.push(tokio::spawn(async move {
+                let _guard = permit;
+                log::debug!("[builder] GET ruleset: {}", rscfg.url);
+                let result = ruleset::fetch_and_parse_ruleset(&client, &rscfg).await;
+                (rscfg, result)
+            }));
+        }
+
+        for handle in rs_handles {
+            match handle.await {
+                Ok((rscfg, Ok(parsed))) => {
+                    if parsed.large && parsed.rules.len() >= provider_threshold {
+                        let pname = format!("provider_{}", rscfg.group);
+                        rule_providers.push(ruleset::generate_rule_provider(
+                            &pname, &rscfg.url, rscfg.interval, &parsed.behavior,
+                        ));
+                        rules.push(ruleset::rule_set_rule(&pname, &parsed.group));
+                    } else {
+                        for rule in &parsed.rules {
+                            rules.push(rule.clone());
+                        }
                     }
                 }
-            }
-            Err(e) => {
-                log::warn!("Failed to fetch ruleset '{}': {}", rscfg.url, e);
+                Ok((rscfg, Err(e))) => {
+                    log::warn!("Failed to fetch ruleset '{}': {}", rscfg.url, e);
+                }
+                Err(e) => {
+                    log::warn!("Ruleset task failed: {}", e);
+                }
             }
         }
     }

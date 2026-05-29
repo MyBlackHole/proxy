@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::sync::Arc;
+use tokio::sync::Semaphore;
 
 use crate::airport;
 use crate::alive;
@@ -42,6 +44,7 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     init_cache_from_config(&config.settings);
 
     let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
+    let direct_client = build_direct_client()?;
 
     // 1. Crawl + airport auto-register → raw subscribe URLs
     let crawled_urls = crawl_and_discover(&client, &config).await?;
@@ -50,11 +53,11 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     process_renewals_all(&client, &config).await?;
 
     // 3. Domain subscribe-processing → EnrichedProxy (with latency)
-    let mut all_enriched = process_domain_subscriptions(&config).await?;
+    let mut all_enriched = process_domain_subscriptions(&direct_client, &config).await?;
 
-    // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy
+    // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (direct, no proxy)
     let crawled_enriched = process_crawled_proxies(
-        &client, &crawled_urls, &config.settings,
+        &direct_client, &crawled_urls, &config.settings,
     ).await?;
     all_enriched.extend(crawled_enriched);
 
@@ -118,12 +121,13 @@ async fn process_renewals_all(
 }
 
 async fn process_domain_subscriptions(
+    client: &reqwest::Client,
     config: &AppConfig,
 ) -> Result<Vec<EnrichedProxy>> {
     let mut all_enriched: Vec<EnrichedProxy> = Vec::new();
     for (idx, domain) in config.domains.iter().enumerate() {
         let source_id = (idx + 1) as u32; // 1-based to match subconverter convention
-        let enriched = process_domain_enriched(domain, &config.settings).await?;
+        let enriched = process_domain_enriched(client, domain, &config.settings).await?;
         let proxies: Vec<EnrichedProxy> = enriched
             .into_iter()
             .map(|mut ep| { ep.source_id = source_id; ep })
@@ -135,18 +139,20 @@ async fn process_domain_subscriptions(
 }
 
 async fn process_crawled_proxies(
-    _client: &reqwest::Client,
+    client: &reqwest::Client,
     urls: &[String],
     settings: &SettingsConfig,
 ) -> Result<Vec<EnrichedProxy>> {
     if urls.is_empty() {
         return Ok(Vec::new());
     }
-    let proxy = settings.socks_proxy.as_deref();
     log::info!("Processing {} crawled/registered URLs", urls.len());
 
     let mut crawled_proxies = Vec::new();
+    let mut http_urls: Vec<String> = Vec::new();
+
     for url in urls {
+        // Direct proxy URL (non-HTTP scheme like ss://, trojan://, etc.)
         if url.contains("://") && !url.starts_with("http://") && !url.starts_with("https://") {
             if let Ok(node) = parser::parse_proxy_url(url) {
                 crawled_proxies.push(node);
@@ -154,7 +160,7 @@ async fn process_crawled_proxies(
             continue;
         }
 
-        // Handle base64-encoded subscription data extracted from crawled pages
+        // Base64-encoded subscription data extracted from crawled pages
         if !url.contains("://") && url.len() > 20 {
             let stripped: String = url.chars().filter(|c| !c.is_whitespace()).collect();
             if stripped.len() > 20
@@ -176,15 +182,41 @@ async fn process_crawled_proxies(
             }
         }
 
-        match subscribe::fetch_and_parse(url, proxy).await {
-            Ok(links) => {
-                for link in links {
-                    if let Ok(node) = parser::parse_proxy_url(&link) {
-                        crawled_proxies.push(node);
+        // HTTP(S) subscription URL — will be fetched concurrently
+        http_urls.push(url.clone());
+    }
+
+    // Concurrently fetch HTTP subscription URLs using shared client (no proxy)
+    if !http_urls.is_empty() {
+        log::info!("Concurrently fetching {} HTTP subscription URLs", http_urls.len());
+        let semaphore = Arc::new(Semaphore::new(settings.concurrency));
+        let mut handles = Vec::with_capacity(http_urls.len());
+
+        for url in http_urls {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let client = client.clone();
+            handles.push(tokio::spawn(async move {
+                let _guard = permit;
+                match subscribe::fetch_and_parse_with_client(&client, &url).await {
+                    Ok(links) => {
+                        let proxies: Vec<ProxyNode> = links
+                            .into_iter()
+                            .filter_map(|link| parser::parse_proxy_url(&link).ok())
+                            .collect();
+                        (url, proxies)
+                    }
+                    Err(e) => {
+                        log::debug!("Failed to fetch crawled URL {}: {}", url, e);
+                        (url, Vec::new())
                     }
                 }
+            }));
+        }
+
+        for handle in handles {
+            if let Ok((_url, proxies)) = handle.await {
+                crawled_proxies.extend(proxies);
             }
-            Err(e) => log::debug!("Failed to fetch crawled URL {}: {}", url, e),
         }
     }
 
@@ -215,7 +247,11 @@ async fn run_crawlers(
         return Ok(Vec::new());
     }
 
-    let gh_token = std::env::var("PUSH_TOKEN").unwrap_or_default();
+    let gh_token = if !crawl_cfg.github.token.is_empty() {
+        crawl_cfg.github.token.clone()
+    } else {
+        std::env::var("GITHUB_TOKEN").unwrap_or_default()
+    };
     let client = client.clone();
     let mut handles: Vec<tokio::task::JoinHandle<Vec<String>>> = Vec::new();
 
@@ -547,27 +583,46 @@ async fn process_renewals(
 // ── Domain Subscribe Processing (EnrichedProxy variant) ───────────────────
 
 async fn process_domain_enriched(
+    client: &reqwest::Client,
     domain: &DomainConfig,
     settings: &SettingsConfig,
 ) -> Result<Vec<EnrichedProxy>> {
     log::info!("Processing domain: {}", domain.name);
-    let proxy = settings.socks_proxy.as_deref();
 
     let mut raw_links = Vec::new();
 
     let sub_urls: Vec<&str> = domain.sub.iter().map(|s| s.as_str()).collect();
     if sub_urls.is_empty() && !domain.domain.is_empty() {
-        let links = subscribe::fetch_and_parse(&domain.domain, proxy).await?;
+        let links = subscribe::fetch_and_parse_with_client(client, &domain.domain).await?;
         raw_links.extend(links);
     }
-    for url in sub_urls {
-        log::info!("Fetching subscription: {}", url);
-        match subscribe::fetch_and_parse(url, proxy).await {
-            Ok(links) => {
-                log::info!("Found {} proxy links from {}", links.len(), url);
+    if !sub_urls.is_empty() {
+        log::info!("Concurrently fetching {} subscription URLs for domain {}", sub_urls.len(), domain.name);
+        let semaphore = Arc::new(Semaphore::new(settings.concurrency));
+        let mut handles = Vec::with_capacity(sub_urls.len());
+        for url in sub_urls {
+            let permit = semaphore.clone().acquire_owned().await.unwrap();
+            let client = client.clone();
+            let url = url.to_string();
+            handles.push(tokio::spawn(async move {
+                let _guard = permit;
+                log::info!("Fetching subscription: {}", url);
+                match subscribe::fetch_and_parse_with_client(&client, &url).await {
+                    Ok(links) => {
+                        log::info!("Found {} proxy links from {}", links.len(), url);
+                        links
+                    }
+                    Err(e) => {
+                        log::warn!("Failed to fetch {}: {}", url, e);
+                        Vec::new()
+                    }
+                }
+            }));
+        }
+        for handle in handles {
+            if let Ok(links) = handle.await {
                 raw_links.extend(links);
             }
-            Err(e) => log::warn!("Failed to fetch {}: {}", url, e),
         }
     }
 
@@ -722,12 +777,13 @@ pub async fn check_alive_only(config_path: &str) -> Result<()> {
     log::info!("Running health check only mode");
 
     init_cache_from_config(&config.settings);
+    let direct_client = build_direct_client()?;
 
     let mut all_enriched = Vec::new();
     for (idx, domain) in config.domains.iter().enumerate() {
         let source_id = (idx + 1) as u32;
         log::info!("Check-only: re-validating proxies for domain {}", domain.name);
-        match process_domain_enriched(domain, &config.settings).await {
+        match process_domain_enriched(&direct_client, domain, &config.settings).await {
             Ok(proxies) => {
                 let proxies: Vec<EnrichedProxy> = proxies
                     .into_iter()
@@ -777,6 +833,16 @@ pub async fn check_alive_only(config_path: &str) -> Result<()> {
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────
+
+fn build_direct_client() -> Result<reqwest::Client> {
+    reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .connect_timeout(std::time::Duration::from_secs(10))
+        .danger_accept_invalid_certs(true)
+        .user_agent("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+        .build()
+        .map_err(|e| AppError::InvalidProxy(format!("failed to build client: {}", e)))
+}
 
 fn build_reqwest_client(proxy: Option<&str>) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder()
