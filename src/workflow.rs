@@ -153,6 +153,29 @@ async fn process_crawled_proxies(
             }
             continue;
         }
+
+        // Handle base64-encoded subscription data extracted from crawled pages
+        if !url.contains("://") && url.len() > 20 {
+            let stripped: String = url.chars().filter(|c| !c.is_whitespace()).collect();
+            if stripped.len() > 20
+                && stripped.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+            {
+                if let Ok(decoded) = subscribe::decode_base64_subscription(&stripped) {
+                    let format = subscribe::detect_format(decoded.as_bytes());
+                    let links = subscribe::extract_links(&decoded, format);
+                    if !links.is_empty() {
+                        log::info!("Base64 URL decoded into {} proxy links", links.len());
+                        for link in links {
+                            if let Ok(node) = parser::parse_proxy_url(&link) {
+                                crawled_proxies.push(node);
+                            }
+                        }
+                        continue;
+                    }
+                }
+            }
+        }
+
         match subscribe::fetch_and_parse(url, proxy).await {
             Ok(links) => {
                 for link in links {
