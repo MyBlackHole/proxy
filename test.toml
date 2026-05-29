@@ -1,84 +1,291 @@
+# =============================================================================
+# Proxy Collector — 全量配置文件
+# =============================================================================
+# 此文件包含所有可用配置项及详细注释，覆盖全部功能。
+# 所有字段都包含默认值，仅需填写需要覆盖的部分即可运行。
+# =============================================================================
+
+
+# ── 1. 代理订阅源 (Domains) ─────────────────────────────────────────────────
+# 定义订阅源 URL、域名过滤规则，以及对每个源的正则筛选。
+# [[domains]] 可以定义多个，每个独立配置。
+
 [[domains]]
-name = "free-servers"
-domain = ""
-sub = []
+name = "free-servers"                     # 源名称（仅用于标识）
+domain = ""                               # 域名过滤（空=不过滤）
+sub = [                                   # 订阅地址列表（HTTP(S) 直链）
+    "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub",
+]
+push_to = ["free"]                        # 归属组（对应 [groups.free]）
+enable = true                             # 启用/禁用
+renew = { plan_id = 0, package = "", method = 0 }  # 自动续期配置（可选）
+
+# 第二组: 带重命名和正则过滤的订阅源
+[[domains]]
+name = "example-pool"
+domain = "example.com"
+sub = ["https://example.com/sub"]
 push_to = ["free"]
 enable = true
-ignorede = true
-liveness = true
-rate = 2.5
-count = 2
+rename = ""                               # 节点重命名规则（可空）
+include = ""                              # 包含匹配（正则，空=全部保留）
+exclude = ""                              # 排除匹配（正则，空=不过滤）
+coupon = ""                               # coupon 标识
+secure = false                            # 是否启用安全传输
+
+# 带自动续期的订阅源示例（用于机场面板订阅）
+# [[domains]]
+# name = "renew-example"
+# domain = ""
+# sub = ["https://panel.example.com/sub"]
+# push_to = ["free"]
+# enable = true
+# renew = { plan_id = 1, package = "pro-monthly", method = 2, coupon_code = "" }
+#   [domains.renew.accounts]
+#     # 每个账户可单独配置 ticket
+#     email = "user@example.com"
+#     passwd = "password123"
+#     [domains.renew.accounts.ticket]
+#       enable = true
+#       autoreset = false
+#       subject = "续费请求"
+#       message = "请帮我续费"
+#       level = 0
+
+
+# ── 2. 爬虫配置 (Crawl) ─────────────────────────────────────────────────────
+# 控制多平台代理爬取，每个平台独立控制。
 
 [crawl]
-enable = true
-exclude = ""
-threshold = 5
-singlelink = true
+enable = true                             # 总开关
+exclude = ""                              # 全局排除正则
+threshold = 5                             # 代理去重阈值（相同链接出现 N 次以上才入池）
+singlelink = true                         # 是否启用单链接模式
 
-[crawl.persist]
-subs = ""
-proxies = ""
+[crawl.persist]                           # 持久化配置
+subs = ""                                 # 订阅缓存路径（空=不缓存）
+proxies = ""                              # 代理缓存路径（空=不缓存）
 
-[crawl.config]
+[crawl.config]                            # 全局爬取内容过滤
 rename = ""
 include = ""
 exclude = ""
 
+
+# ── 2a. Telegram ────────────────────────────────────────────────────────────
+# 爬取 Telegram 频道/群组中的订阅链接，支持关键词搜索。
+
 [crawl.telegram]
 enable = true
-pages = 3
-exclude = ""
+pages = 10                                # 每个频道/群组翻页数
+search_enable = true                      # 关键词搜索开关
+search_query = "免费节点 订阅 ss:// trojan:// vmess://"  # 搜索关键词
+search_pages = 5                          # 搜索结果翻页数
+exclude = ""                              # 排除匹配
+history_depth = 3                         # 频道历史消息深度（翻页数）
 
-# Telegram 关键词搜索
-search_enable = true
-search_query = "v2ray subscribe"
-search_pages = 1
-
-[crawl.telegram.users]
+[crawl.telegram.users]                    # 固定频道/群组监控
+# 每个 key = 用户名，值为配置
 proxyshareCN = { push_to = ["free"] }
+# "kxswa" = { push_to = ["free"] }
+# "SSRSub" = { push_to = ["free"] }
+# "MujjUSB" = { push_to = ["free"] }
+# "DuckSub" = { push_to = ["out"] }
+# "WangWangCai" = { include = "", exclude = "", push_to = ["out"] }
 
-[crawl.github]
-enable = true
-pages = 1
-push_to = ["free"]
-exclude = ""
-spams = []
-search_topic = "subscribe+token+v2ray"
-query = ""
-search_repos = ["Pawdroid/Free-servers", "mksshare/mksshare.github.io"]
 
-# GitHub Gist 和 Topic 搜索
-search_gists = true
-search_topics = ["v2ray", "proxy", "subscribe"]
-
-[crawl.google]
-enable = true
-exclude = ""
-push_to = ["free"]
-query = "v2ray subscribe token"
-
-[crawl.yandex]
-enable = true
-exclude = ""
-push_to = ["free"]
-query = "v2ray subscribe token"
+# ── 2b. Twitter/X ────────────────────────────────────────────────────────────
+# 搜索 Twitter 推文中的代理订阅链接，支持指定用户爬取。
 
 [crawl.twitter]
 enable = true
-search_enable = true
-search_query = "v2ray proxy subscribe"
-search_count = 20
+search_enable = true                      # 关键词搜索
+search_query = "free proxy v2ray subscription ss://"
+search_count = 50                         # 每次搜索获取推文数
 
-[crawl.twitter.users]
+[crawl.twitter.users]                     # 指定用户推文监控
 v2ray = { push_to = ["free"] }
 ssrsub = { push_to = ["free"] }
 proxylist = { push_to = ["free"] }
+# 每个用户可独立配置:
+# "username" = { enable = true, num = 50, include = "", exclude = "", push_to = ["free"],
+#                config = { rename = "", include = "", exclude = "" } }
+
+
+# ── 2c. Google ──────────────────────────────────────────────────────────────
+# Google 自定义搜索，查找包含订阅链接的页面。
+
+[crawl.google]
+enable = true
+query = "v2ray subscribe clash token subscription free"
+limits = 200                              # 最大搜索结果数
+exclude = ""                              # 排除匹配
+notinurl = []                             # URL 排除关键词
+push_to = ["free"]
+
+
+# ── 2d. Yandex ──────────────────────────────────────────────────────────────
+# Yandex 搜索（俄罗斯，Google 替代方案，通常可获更多结果）。
+
+[crawl.yandex]
+enable = true
+query = "v2ray clash subscribe token subscription"
+within = 3                                # 搜索域名限制（0=不限）
+pages = 10                                # 翻页数
+exclude = ""                              # 排除匹配
+notinurl = []                             # URL 排除关键词
+push_to = ["free"]
+
+
+# ── 2e. GitHub ──────────────────────────────────────────────────────────────
+# 多种 GitHub 搜索策略: Topic / Code / Gist / README / 文件内容 / 指定仓库。
+
+[crawl.github]
+enable = true
+pages = 5                                 # 翻页数
+push_to = ["free"]
+exclude = ""
+spams = []                                # 垃圾内容排除关键词
+
+# Topic 搜索: 在 GitHub Topics 中查找代理相关仓库
+search_topic = "free-proxy"               # 基础搜索主题
+query = "subscribe?token="                # 代码搜索查詢（搜索文件内容）
+
+# 搜索策略开关 (默认全部开启)
+search_gists = true                       # 搜索 Gist
+search_readme = true                      # 搜索 README
+search_files = true                       # 搜索仓库文件内容
+search_topics = [                         # Topic 关键词列表
+    "free-proxy",
+    "v2ray",
+    "clash",
+    "proxy-list",
+    "shadowsocks",
+    "trojan",
+    "proxies",
+    "vpn",
+]
+
+# 直接爬取的指定仓库
+search_repos = [
+    "Pawdroid/Free-servers",
+    "mksshare/mksshare.github.io",
+]
+
+# 指定仓库订阅监控
+# [crawl.github.users]
+# "owner" = { sub = "", push_to = ["free"] }
+
+
+# ── 2f. Discord ─────────────────────────────────────────────────────────────
+# 通过 Discord Bot 爬取指定频道中的代理消息。
+
+[crawl.discord]
+enable = true
+bot_token = ""                            # Discord Bot Token（必填）
+guild_id = ""                             # 服务器 ID（必填）
+channels = []                             # 频道 ID 列表（空=所有可访问频道）
+limit = 100                               # 每个频道最大消息数
+push_to = ["free"]
+
+
+# ── 2g. RSS/Atom ────────────────────────────────────────────────────────────
+# 监控 RSS/Atom Feed，提取代理订阅链接。
+
+[crawl.rss]
+enable = true
+urls = [                                  # Feed URL 列表
+    # "https://example.com/proxy-feed.xml",
+]
+limit = 100                               # 每个 Feed 最大条目数
+push_to = ["free"]
+
+
+# ── 2h. Proxy 聚合站点 (Proxy Sites) ────────────────────────────────────────
+# 已知的免费代理聚合站，每个站点可独立配置正则过滤。
+# 如未在配置中显式列出，默认使用以下站点。
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://raw.githubusercontent.com/TheSpeedX/SOCKS-Proxy-List/master/socks5.txt"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://raw.githubusercontent.com/free-proxy-list/free-proxy-list/main/free-proxy-list.txt"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies.txt"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://proxifly-free-proxy-list.p.rapidapi.com/api/v1/proxies?protocol=http&protocol=socks5"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all"
+
+[[crawl.proxy_sites]]
+enable = true
+url = "https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all"
+
+# 自定义聚合站点示例（带正则过滤）
+# [[crawl.proxy_sites]]
+# enable = true
+# url = "https://example.com/proxy-list"
+# include = ""          # 只保留匹配的内容
+# exclude = ""          # 排除匹配的内容
+# push_to = ["free"]    # 归属组
+
+
+# ── 2i. 通用页面爬取 (Pages) ────────────────────────────────────────────────
+# 爬取任意 URL 页面内容，支持翻页和链接跟进。
+
+[[crawl.pages]]
+enable = true
+url = "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
+include = ""
+exclude = ""
+multiple = true                           # 多页模式（配合 start/end 使用）
+placeholder = ""                          # URL 占位符（用于翻页 URL 模板）
+start = 1
+end = 1
+depth = 1                                 # 链接跟进深度（0=不跟进）
+concurrency = 0                           # 并发爬取数（0/1=串行）
+push_to = ["free"]
+[crawl.pages.config]
+rename = ""
+include = ""
+exclude = ""
+
+# 翻页示例: 从 page/1 到 page/5
+# [[crawl.pages]]
+# enable = true
+# url = "https://example.com/page/{page}"
+# multiple = true
+# placeholder = "{page}"
+# start = 1
+# end = 5
+# depth = 0
+# push_to = ["free"]
+
+
+# ── 2j. 仓库爬取 (Repositories) ─────────────────────────────────────────────
+# 爬取指定 GitHub 仓库的 commit 历史，从中提取代理链接。
 
 [[crawl.repositories]]
 enable = true
 username = "Pawdroid"
 repo_name = "Free-servers"
-commits = 2
+commits = 5                               # 最近 commit 数
 exclude = ""
 push_to = ["free"]
 
@@ -86,50 +293,110 @@ push_to = ["free"]
 enable = true
 username = "mksshare"
 repo_name = "mksshare.github.io"
-commits = 2
+commits = 5
 exclude = ""
 push_to = ["free"]
 
-[[crawl.pages]]
-enable = true
-url = "https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"
-include = ""
-exclude = ""
-multiple = false
-placeholder = ""
-start = 1
-end = 1
-depth = 1
-push_to = ["free"]
 
-[crawl.pages.config]
-rename = ""
-include = ""
-exclude = ""
+# ── 3. 输出分组 (Groups) ────────────────────────────────────────────────────
+# 定义输出文件的组配置，支持 Smart Group（智能分组）和自定义分组。
 
-[groups.free]
-emoji = true
-list = true
+[groups.free]                             # 组名（与 domain/crawl 中的 push_to 对应）
+emoji = true                              # 节点名前添加 emoji 国旗
+list = true                               # 生成节点列表
 
-[groups.free.targets]
-clash = "free-clash"
+[groups.free.targets]                     # 输出目标（一个组可输出到多个文件）
+clash = "free-clash"                      # Clash 格式 → [storage.items.free-clash]
 
-[groups.free.regularize]
+[groups.free.regularize]                  # 节点名字标准化
 enable = false
-locate = false
-residential = false
-bits = 2
+locate = false                            # 根据 GeoIP 补充位置信息
+residential = false                       # 标记住宅 IP
+bits = 2                                  # 标准化精度
 
-[settings]
-socks_proxy = "socks5://127.0.0.1:1081"
-concurrency = 16
-timeout = 30000
-retry = 1
-test_url = "https://www.gstatic.com/generate_204"
+[groups.free.smart]                       # 智能分组（按区域自动创建子组）
+enable = true
+region_groups = true                      # 按区域创建 Auto 组（HK Auto, JP Auto...）
+auto_group_type = "url-test"              # Auto 组类型: url-test / fallback / load-balance
+fallback_group = true                     # 创建全局故障转移组
+load_balance_group = false                # 创建全局负载均衡组
+generate_rules = true                     # 生成智能路由规则
+ai_rules = true                           # AI 服务 → Proxy
+streaming_rules = true                    # 流媒体 → Proxy
+social_rules = true                       # 社交平台 → Proxy
+gaming_rules = false                      # 游戏 → Proxy
+banking_rules = false                     # 银行 → DIRECT
+direct_rules = true                       # 国内 → DIRECT
+custom_rules = []                         # 自定义规则（每行一条 Clash 规则语法）
+
+# ── 自定义 Proxy Groups ──
+# 子转换器(subconverter)风格的正则匹配分组
+
+# 自定义「自动选择」组（regex 匹配代理名）
+[[groups.free.custom_groups]]
+name = "🇯🇵 日本"
+group_type = "url-test"
+proxies = ["(日|日本|JP|Japan)"]
+url = "https://www.gstatic.com/generate_204"
+interval = 300
+tolerance = 50
+lazy = true
+disable_udp = false
+
+# 策略组（select/手动选择）
+[[groups.free.custom_groups]]
+name = "🎬 流媒体"
+group_type = "select"
+proxies = [
+    "(日|日本|JP|Japan)",
+    "(新|新加坡|SG|Singapore)",
+    "(美|美国|US|United States)",
+    "[]香港 Auto",          # 引用其他分组
+    "[]DIRECT",
+]
+
+# ── 外部规则集 (Rulesets) ──
+# 远程规则集自动下载并注入
+
+[[groups.free.rulesets]]
+group = "Proxy"                           # 策略组
+url = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.ini"
+interval = 86400                          # 刷新间隔（秒）
+
+[[groups.free.rulesets]]
+group = "DIRECT"
+url = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.ini"
+interval = 86400
+
+# ── 模板覆盖 ──
+# [groups.free.template]
+# base = "templates/base.yaml"            # 自定义基础 YAML 模板路径
+# provider_threshold = 50                 # 规则达到此数时自动转为 rule-provider
+
+
+# ── 4. 存储配置 (Storage) ────────────────────────────────────────────────────
+# 支持本地文件存储。可扩展 S3/GCS 等（需实现 Storage trait）。
 
 [storage]
 engine = "local"
 
-[storage.items.free-clash]
+[storage.items.free-clash]                # 对应 groups.free.targets.clash
 fileid = "crawl-output.yaml"
 folderid = "/tmp/crawl"
+
+[storage.items.test-out]                  # 第二个输出目标示例
+fileid = "test_output.yaml"
+folderid = "/tmp/proxy-test"
+
+
+# ── 5. 全局设置 (Settings) ──────────────────────────────────────────────────
+
+[settings]
+socks_proxy = "socks5://127.0.0.1:1081"  # SOCKS5 代理（Telegram/Google/Yandex/Twitter 需要）
+concurrency = 64                          # 并发数
+timeout = 30000                           # 超时（毫秒）
+retry = 3                                 # 重试次数
+test_url = "https://www.gstatic.com/generate_204"  # 连通性测试 URL
+overwrite = false                         # 是否覆盖已缓存节点
+invisible = false                         # 安静模式
+validate_binary = ""                      # Mihomo/Clash-Meta 二进制路径（用于配置校验）
