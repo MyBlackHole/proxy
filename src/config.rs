@@ -377,12 +377,6 @@ pub struct GoogleCrawlConfig {
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
-pub struct ScriptCrawlConfig {
-    #[serde(default = "default_true")]
-    pub enable: bool,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
 pub struct GithubUserConfig {
     #[serde(default)]
     pub sub: String,

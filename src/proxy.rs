@@ -40,76 +40,39 @@ pub struct DedupKey {
     pub cred_hash: String,
 }
 
+macro_rules! proxy_accessors {
+    ($($variant:ident),+ $(,)?) => {
+        impl ProxyNode {
+            pub fn name(&self) -> &str {
+                match self {
+                    $( ProxyNode::$variant(c) => &c.name, )+
+                }
+            }
+            pub fn set_name(&mut self, new_name: String) {
+                match self {
+                    $( ProxyNode::$variant(c) => c.name = new_name, )+
+                }
+            }
+            pub fn host(&self) -> &str {
+                match self {
+                    $( ProxyNode::$variant(c) => &c.server, )+
+                }
+            }
+            pub fn port(&self) -> u16 {
+                match self {
+                    $( ProxyNode::$variant(c) => c.port, )+
+                }
+            }
+        }
+    };
+}
+
+proxy_accessors!(
+    Shadowsocks, ShadowsocksR, VMess, Trojan, VLESS,
+    Hysteria, Hysteria2, Tuic, Snell, Http, Socks5, AnyTLS
+);
+
 impl ProxyNode {
-    pub fn name(&self) -> &str {
-        match self {
-            ProxyNode::Shadowsocks(c) => &c.name,
-            ProxyNode::ShadowsocksR(c) => &c.name,
-            ProxyNode::VMess(c) => &c.name,
-            ProxyNode::Trojan(c) => &c.name,
-            ProxyNode::VLESS(c) => &c.name,
-            ProxyNode::Hysteria(c) => &c.name,
-            ProxyNode::Hysteria2(c) => &c.name,
-            ProxyNode::Tuic(c) => &c.name,
-            ProxyNode::Snell(c) => &c.name,
-            ProxyNode::Http(c) => &c.name,
-            ProxyNode::Socks5(c) => &c.name,
-            ProxyNode::AnyTLS(c) => &c.name,
-        }
-    }
-
-    pub fn set_name(&mut self, new_name: String) {
-        let setter = |n: &mut String| *n = new_name;
-        match self {
-            ProxyNode::Shadowsocks(c) => setter(&mut c.name),
-            ProxyNode::ShadowsocksR(c) => setter(&mut c.name),
-            ProxyNode::VMess(c) => setter(&mut c.name),
-            ProxyNode::Trojan(c) => setter(&mut c.name),
-            ProxyNode::VLESS(c) => setter(&mut c.name),
-            ProxyNode::Hysteria(c) => setter(&mut c.name),
-            ProxyNode::Hysteria2(c) => setter(&mut c.name),
-            ProxyNode::Tuic(c) => setter(&mut c.name),
-            ProxyNode::Snell(c) => setter(&mut c.name),
-            ProxyNode::Http(c) => setter(&mut c.name),
-            ProxyNode::Socks5(c) => setter(&mut c.name),
-            ProxyNode::AnyTLS(c) => setter(&mut c.name),
-        }
-    }
-
-    pub fn host(&self) -> &str {
-        match self {
-            ProxyNode::Shadowsocks(c) => &c.server,
-            ProxyNode::ShadowsocksR(c) => &c.server,
-            ProxyNode::VMess(c) => &c.server,
-            ProxyNode::Trojan(c) => &c.server,
-            ProxyNode::VLESS(c) => &c.server,
-            ProxyNode::Hysteria(c) => &c.server,
-            ProxyNode::Hysteria2(c) => &c.server,
-            ProxyNode::Tuic(c) => &c.server,
-            ProxyNode::Snell(c) => &c.server,
-            ProxyNode::Http(c) => &c.server,
-            ProxyNode::Socks5(c) => &c.server,
-            ProxyNode::AnyTLS(c) => &c.server,
-        }
-    }
-
-    pub fn port(&self) -> u16 {
-        match self {
-            ProxyNode::Shadowsocks(c) => c.port,
-            ProxyNode::ShadowsocksR(c) => c.port,
-            ProxyNode::VMess(c) => c.port,
-            ProxyNode::Trojan(c) => c.port,
-            ProxyNode::VLESS(c) => c.port,
-            ProxyNode::Hysteria(c) => c.port,
-            ProxyNode::Hysteria2(c) => c.port,
-            ProxyNode::Tuic(c) => c.port,
-            ProxyNode::Snell(c) => c.port,
-            ProxyNode::Http(c) => c.port,
-            ProxyNode::Socks5(c) => c.port,
-            ProxyNode::AnyTLS(c) => c.port,
-        }
-    }
-
     pub fn dedup_key(&self) -> DedupKey {
         use sha2::{Digest, Sha256};
         let cred_bytes = match self {

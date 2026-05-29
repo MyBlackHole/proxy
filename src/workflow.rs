@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::future::Future;
 
 use crate::airport;
 use crate::alive;
@@ -179,278 +180,219 @@ async fn run_crawlers(
     let client = client.clone();
     let mut handles: Vec<tokio::task::JoinHandle<Vec<String>>> = Vec::new();
 
-    // ── Telegram channels ──
-    if crawl_cfg.telegram.enable {
-        for name in crawl_cfg.telegram.users.keys() {
-            let client = client.clone();
-            let name = name.clone();
-            let pages = crawl_cfg.telegram.pages;
-            handles.push(tokio::spawn(async move {
-                log::info!("Crawling Telegram channel: {}", name);
-                match crawl::crawl_telegram(&client, &name, pages).await {
-                    Ok(urls) => {
-                        log::info!("Telegram {}: {} subscribe URLs", name, urls.len());
-                        urls
-                    }
-                    Err(e) => {
-                        log::warn!("Telegram {} crawl failed: {}", name, e);
-                        Vec::new()
-                    }
-                }
-            }));
-        }
-
-        // Telegram keyword search across public groups
-        if crawl_cfg.telegram.search_enable && !crawl_cfg.telegram.search_query.is_empty() {
-            let client = client.clone();
-            let search_query = crawl_cfg.telegram.search_query.clone();
-            let search_pages = crawl_cfg.telegram.search_pages;
-            handles.push(tokio::spawn(async move {
-                log::info!("Telegram search: {}", search_query);
-                match crawl::crawl_telegram_search(&client, &search_query, search_pages).await {
-                    Ok(urls) => {
-                        log::info!("Telegram search: {} subscribe URLs", urls.len());
-                        urls
-                    }
-                    Err(e) => {
-                        log::warn!("Telegram search failed: {}", e);
-                        Vec::new()
-                    }
-                }
-            }));
-        }
-    }
-
-    // ── GitHub code search ──
-    if crawl_cfg.github.enable {
+    /// Spawn a crawling task with standard error handling and logging.
+    /// Collects the result into `handles` automatically.
+    fn spawn_crawler<F, Fut>(
+        handles: &mut Vec<tokio::task::JoinHandle<Vec<String>>>,
+        client: &reqwest::Client,
+        name: &str,
+        f: F,
+    )
+    where
+        F: FnOnce(reqwest::Client) -> Fut + Send + 'static,
+        Fut: Future<Output = Result<Vec<String>>> + Send + 'static,
+    {
         let client = client.clone();
-        let query = crawl_cfg.github.query.clone();
-        let pages = crawl_cfg.github.pages;
-        let users: Vec<(String, String)> = crawl_cfg.github.users.iter()
-            .map(|(k, v)| (k.clone(), v.sub.clone()))
-            .collect();
-        let search_repos: Vec<String> = crawl_cfg.github.search_repos.clone();
-        let token = gh_token.clone();
+        let name = name.to_string();
         handles.push(tokio::spawn(async move {
-            let mut urls = Vec::new();
-
-            // Global query
-            if !query.is_empty() {
-                log::info!("Crawling GitHub with query: {}", query);
-                match crawl::crawl_github(&client, &query, pages, &token).await {
-                    Ok(found) => {
-                        log::info!("GitHub query: {} subscribe URLs", found.len());
-                        urls.extend(found);
-                    }
-                    Err(e) => log::warn!("GitHub query crawl failed: {}", e),
-                }
-            }
-
-            // Per-user repos
-            for (username, sub) in &users {
-                log::info!("Crawling GitHub user repos: {}", username);
-                match crawl::crawl_github_repo(&client, username, sub, 3, &token).await {
-                    Ok(found) => {
-                        log::info!("GitHub user {}: {} subscribe URLs", username, found.len());
-                        urls.extend(found);
-                    }
-                    Err(e) => log::warn!("GitHub user {} crawl failed: {}", username, e),
-                }
-            }
-
-            // Specific repos
-            for repo in &search_repos {
-                let parts: Vec<&str> = repo.split('/').collect();
-                if parts.len() >= 2 {
-                    let owner = parts[parts.len() - 2];
-                    let repo_name = parts[parts.len() - 1];
-                    match crawl::crawl_github_repo(&client, owner, repo_name, 3, &token).await {
-                        Ok(found) => {
-                            log::info!("GitHub repo {}/{}: {} subscribe URLs", owner, repo_name, found.len());
-                            urls.extend(found);
-                        }
-                        Err(e) => log::warn!("GitHub repo {}/{} crawl failed: {}", owner, repo_name, e),
-                    }
-                }
-            }
-
-            urls
-        }));
-    }
-
-    // ── Google search (uses dedicated query if set, falls back to github.search_topic) ──
-    if crawl_cfg.google.enable {
-        let client = client.clone();
-        let google_query = if !crawl_cfg.google.query.is_empty() {
-            crawl_cfg.google.query.clone()
-        } else {
-            crawl_cfg.github.search_topic.clone()
-        };
-        handles.push(tokio::spawn(async move {
-            if google_query.is_empty() {
-                return Vec::new();
-            }
-            log::info!("Crawling Google search");
-            let max_pages = 3;
-            match crawl::crawl_google(&client, &google_query, max_pages).await {
+            log::info!("Crawling {}", name);
+            match f(client).await {
                 Ok(found) => {
-                    log::info!("Google: {} subscribe URLs", found.len());
+                    log::info!("{}: {} subscribe URLs", name, found.len());
                     found
                 }
                 Err(e) => {
-                    log::warn!("Google crawl failed: {}", e);
+                    log::warn!("{} crawl failed: {}", name, e);
                     Vec::new()
                 }
             }
         }));
     }
 
+    // ── Telegram ──
+    if crawl_cfg.telegram.enable {
+        for name in crawl_cfg.telegram.users.keys() {
+            let name = name.clone();
+            let pages = crawl_cfg.telegram.pages;
+            spawn_crawler(&mut handles, &client, &format!("Telegram channel: {}", name), move |client| async move {
+                crawl::crawl_telegram(&client, &name, pages).await
+            });
+        }
+
+        // Telegram keyword search across public groups
+        if crawl_cfg.telegram.search_enable && !crawl_cfg.telegram.search_query.is_empty() {
+            let search_query = crawl_cfg.telegram.search_query.clone();
+            let search_pages = crawl_cfg.telegram.search_pages;
+            spawn_crawler(&mut handles, &client, "Telegram search", move |client| async move {
+                crawl::crawl_telegram_search(&client, &search_query, search_pages).await
+            });
+        }
+    }
+
+    // ── GitHub code search ──
+    if crawl_cfg.github.enable {
+        // Global query search
+        if !crawl_cfg.github.query.is_empty() {
+            let query = crawl_cfg.github.query.clone();
+            let pages = crawl_cfg.github.pages;
+            let token = gh_token.clone();
+            spawn_crawler(&mut handles, &client, "GitHub query", move |client| async move {
+                crawl::crawl_github(&client, &query, pages, &token).await
+            });
+        }
+
+        // Per-user repos
+        if !crawl_cfg.github.users.is_empty() {
+            let users: Vec<(String, String)> = crawl_cfg.github.users.iter()
+                .map(|(k, v)| (k.clone(), v.sub.clone()))
+                .collect();
+            let token = gh_token.clone();
+            spawn_crawler(&mut handles, &client, "GitHub users", move |client| async move {
+                let mut urls = Vec::new();
+                for (username, sub) in &users {
+                    match crawl::crawl_github_repo(&client, username, sub, 3, &token).await {
+                        Ok(found) => {
+                            log::info!("GitHub user {}: {} subscribe URLs", username, found.len());
+                            urls.extend(found);
+                        }
+                        Err(e) => log::warn!("GitHub user {} crawl failed: {}", username, e),
+                    }
+                }
+                Ok(urls)
+            });
+        }
+
+        // Specific repos
+        if !crawl_cfg.github.search_repos.is_empty() {
+            let search_repos: Vec<String> = crawl_cfg.github.search_repos.clone();
+            let token = gh_token.clone();
+            spawn_crawler(&mut handles, &client, "GitHub repos", move |client| async move {
+                let mut urls = Vec::new();
+                for repo in &search_repos {
+                    let parts: Vec<&str> = repo.split('/').collect();
+                    if parts.len() >= 2 {
+                        let owner = parts[parts.len() - 2];
+                        let repo_name = parts[parts.len() - 1];
+                        match crawl::crawl_github_repo(&client, owner, repo_name, 3, &token).await {
+                            Ok(found) => {
+                                log::info!("GitHub repo {}/{}: {} subscribe URLs", owner, repo_name, found.len());
+                                urls.extend(found);
+                            }
+                            Err(e) => log::warn!("GitHub repo {}/{} crawl failed: {}", owner, repo_name, e),
+                        }
+                    }
+                }
+                Ok(urls)
+            });
+        }
+    }
+
+    // ── Google search (uses dedicated query if set, falls back to github.search_topic) ──
+    if crawl_cfg.google.enable {
+        let google_query = if !crawl_cfg.google.query.is_empty() {
+            crawl_cfg.google.query.clone()
+        } else {
+            crawl_cfg.github.search_topic.clone()
+        };
+        spawn_crawler(&mut handles, &client, "Google search", move |client| async move {
+            if google_query.is_empty() {
+                return Ok(Vec::new());
+            }
+            let max_pages = 3;
+            crawl::crawl_google(&client, &google_query, max_pages).await
+        });
+    }
+
     // ── Yandex search (uses dedicated query if set, falls back to github.search_topic) ──
     if crawl_cfg.yandex.enable {
-        let client = client.clone();
         let yandex_query = if !crawl_cfg.yandex.query.is_empty() {
             crawl_cfg.yandex.query.clone()
         } else {
             crawl_cfg.github.search_topic.clone()
         };
         let yandex_pages = crawl_cfg.yandex.pages;
-        handles.push(tokio::spawn(async move {
+        spawn_crawler(&mut handles, &client, "Yandex search", move |client| async move {
             if yandex_query.is_empty() {
-                return Vec::new();
+                return Ok(Vec::new());
             }
-            log::info!("Crawling Yandex search");
-            match crawl::crawl_yandex(&client, &yandex_query, yandex_pages).await {
-                Ok(found) => {
-                    log::info!("Yandex: {} subscribe URLs", found.len());
-                    found
-                }
-                Err(e) => {
-                    log::warn!("Yandex crawl failed: {}", e);
-                    Vec::new()
-                }
-            }
-        }));
+            crawl::crawl_yandex(&client, &yandex_query, yandex_pages).await
+        });
     }
 
     // ── GitHub gist search ──
     if crawl_cfg.github.enable && crawl_cfg.github.search_gists {
-        let token = gh_token.clone();
         let query = crawl_cfg.github.query.clone();
-        let client = client.clone();
-        handles.push(tokio::spawn(async move {
-            log::info!("Crawling GitHub gists");
-            match crawl::crawl_github_gists(&client, &query, &token).await {
-                Ok(found) => {
-                    log::info!("GitHub gists: {} subscribe URLs", found.len());
-                    found
-                }
-                Err(e) => {
-                    log::warn!("GitHub gist crawl failed: {}", e);
-                    Vec::new()
-                }
-            }
-        }));
+        let token = gh_token.clone();
+        spawn_crawler(&mut handles, &client, "GitHub gists", move |client| async move {
+            crawl::crawl_github_gists(&client, &query, &token).await
+        });
     }
 
     // ── GitHub topic search ──
     if crawl_cfg.github.enable && !crawl_cfg.github.search_topics.is_empty() {
-        let token = gh_token.clone();
         let topics = crawl_cfg.github.search_topics.clone();
-        let client = client.clone();
-        handles.push(tokio::spawn(async move {
-            log::info!("Crawling GitHub topics");
-            let found = crawl::crawl_github_topics(&client, &topics, &token).await;
-            log::info!("GitHub topics: {} subscribe URLs", found.len());
-            found
-        }));
+        let token = gh_token.clone();
+        spawn_crawler(&mut handles, &client, "GitHub topics", move |client| async move {
+            Ok(crawl::crawl_github_topics(&client, &topics, &token).await)
+        });
     }
 
-    // ── Twitter users + Twitter keyword search ──
+    // ── Twitter ──
     if crawl_cfg.twitter.enable {
-        let client = client.clone();
-        let users: Vec<(String, bool, usize)> = crawl_cfg.twitter.users.iter()
-            .map(|(k, v)| (k.clone(), v.enable, v.num))
-            .collect();
-        let search_enable = crawl_cfg.twitter.search_enable;
-        let search_query = crawl_cfg.twitter.search_query.clone();
-        let search_count = crawl_cfg.twitter.search_count;
-        handles.push(tokio::spawn(async move {
-            let mut urls = Vec::new();
-
-            // Per-user media timeline crawl
-            for (name, enabled, num) in &users {
-                if !enabled { continue; }
-                log::info!("Crawling Twitter user: {}", name);
-                match crawl::crawl_twitter(&client, name, *num).await {
-                    Ok(found) => {
-                        log::info!("Twitter {}: {} subscribe URLs", name, found.len());
-                        urls.extend(found);
+        // Per-user media timeline crawl
+        if !crawl_cfg.twitter.users.is_empty() {
+            let users: Vec<(String, bool, usize)> = crawl_cfg.twitter.users.iter()
+                .map(|(k, v)| (k.clone(), v.enable, v.num))
+                .collect();
+            spawn_crawler(&mut handles, &client, "Twitter users", move |client| async move {
+                let mut urls = Vec::new();
+                for (name, enabled, num) in &users {
+                    if !enabled { continue; }
+                    match crawl::crawl_twitter(&client, name, *num).await {
+                        Ok(found) => {
+                            log::info!("Twitter {}: {} subscribe URLs", name, found.len());
+                            urls.extend(found);
+                        }
+                        Err(e) => log::warn!("Twitter {} crawl failed: {}", name, e),
                     }
-                    Err(e) => log::warn!("Twitter {} crawl failed: {}", name, e),
                 }
-            }
+                Ok(urls)
+            });
+        }
 
-            // Global keyword search
-            if search_enable && !search_query.is_empty() {
-                log::info!("Crawling Twitter search: {}", search_query);
-                match crawl::crawl_twitter_search(&client, &search_query, search_count).await {
-                    Ok(found) => {
-                        log::info!("Twitter search: {} subscribe URLs", found.len());
-                        urls.extend(found);
-                    }
-                    Err(e) => log::warn!("Twitter search crawl failed: {}", e),
-                }
-            }
-
-            urls
-        }));
+        // Global keyword search
+        if crawl_cfg.twitter.search_enable && !crawl_cfg.twitter.search_query.is_empty() {
+            let search_query = crawl_cfg.twitter.search_query.clone();
+            let search_count = crawl_cfg.twitter.search_count;
+            spawn_crawler(&mut handles, &client, "Twitter search", move |client| async move {
+                crawl::crawl_twitter_search(&client, &search_query, search_count).await
+            });
+        }
     }
 
     // ── Custom pages ──
     for page in &crawl_cfg.pages {
         if !page.enable { continue; }
         if let Some(url) = &page.url {
-            let client = client.clone();
             let url = url.clone();
             let page_cfg = page.clone();
-            handles.push(tokio::spawn(async move {
-                log::info!("Crawling page: {}", url);
+            spawn_crawler(&mut handles, &client, &format!("Page: {}", url), move |client| async move {
                 let urls_list = vec![url.clone()];
-                match crawl::crawl_pages(&client, urls_list, &page_cfg).await {
-                    Ok(found) => {
-                        log::info!("Page {}: {} subscribe URLs", url, found.len());
-                        found
-                    }
-                    Err(e) => {
-                        log::warn!("Page {} crawl failed: {}", url, e);
-                        Vec::new()
-                    }
-                }
-            }));
+                crawl::crawl_pages(&client, urls_list, &page_cfg).await
+            });
         }
     }
 
     // ── Repository crawl configs ──
     for repo in &crawl_cfg.repositories {
         if !repo.enable { continue; }
-        let client = client.clone();
         let username = repo.username.clone();
         let repo_name = repo.repo_name.clone();
         let commits = repo.commits;
         let token = gh_token.clone();
-        handles.push(tokio::spawn(async move {
-            log::info!("Crawling repo: {}/{}", username, repo_name);
-            match crawl::crawl_github_repo(&client, &username, &repo_name, commits, &token).await {
-                Ok(found) => {
-                    log::info!("Repo {}/{}: {} subscribe URLs", username, repo_name, found.len());
-                    found
-                }
-                Err(e) => {
-                    log::warn!("Repo {}/{} crawl failed: {}", username, repo_name, e);
-                    Vec::new()
-                }
-            }
-        }));
+        spawn_crawler(&mut handles, &client, &format!("Repo: {}/{}", username, repo_name), move |client| async move {
+            crawl::crawl_github_repo(&client, &username, &repo_name, commits, &token).await
+        });
     }
 
     // ── Collect all results ──

@@ -820,10 +820,11 @@ pub async fn crawl_telegram_search(
 
     // Use Telegram Web search (t.me/search)
     for page in 0..pages {
+        let page_str = if page == 0 { String::new() } else { page.to_string() };
         let _url = format!(
             "https://t.me/s/{}?before={}",
             encoded,
-            if page == 0 { "" } else { &page.to_string() }
+            if page == 0 { "" } else { &page_str }
         );
 
         if page == 0 {
