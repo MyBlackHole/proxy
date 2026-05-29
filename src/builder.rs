@@ -125,11 +125,11 @@ pub async fn build_clash_config(
     let mut base = load_base_template(cfg.template)?;
 
     // 6. Inject proxies, proxy-groups, rules, rule-providers
-    base.insert("proxies".into(), Value::Sequence(proxy_entries));
-    base.insert("proxy-groups".into(), Value::Sequence(groups));
+    base.insert("Proxy".into(), Value::Sequence(proxy_entries));
+    base.insert("Proxy Group".into(), Value::Sequence(groups));
 
     let rule_values: Vec<Value> = rules.iter().map(|r| Value::String(r.to_rule_string())).collect();
-    base.insert("rules".into(), Value::Sequence(rule_values));
+    base.insert("Rule".into(), Value::Sequence(rule_values));
 
     if !rule_providers.is_empty() {
         // Merge multiple rule-provider mappings into one
@@ -160,8 +160,11 @@ fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::M
                 let value: Value = serde_yaml::from_str(&content)?;
                 if let Some(m) = value.as_mapping() {
                     let mut base = m.clone();
+                    base.remove("Proxy");
                     base.remove("proxies");
+                    base.remove("Proxy Group");
                     base.remove("proxy-groups");
+                    base.remove("Rule");
                     base.remove("rules");
                     base.remove("rule-providers");
                     return Ok(base);
@@ -476,10 +479,13 @@ mod tests {
     #[test]
     fn test_default_clash_header_reused() {
         let header = default_clash_header();
-        assert!(header.contains_key("mixed-port"));
+        assert!(header.contains_key("port"));
+        assert!(header.contains_key("socks-port"));
+        assert!(header.contains_key("allow-lan"));
+        assert!(header.contains_key("external-controller"));
         assert_eq!(
             header.get("mode").unwrap().as_str().unwrap(),
-            "rule"
+            "Rule"
         );
     }
 

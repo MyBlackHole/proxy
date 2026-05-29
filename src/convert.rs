@@ -31,41 +31,15 @@ impl ClashRule {
 const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 
 /// Top-level Clash config header keys shared by all output modes.
-/// Includes modern Clash Meta features for better compatibility.
+/// Aligned with subconverter's standard (GeneralClashConfig.yml / simple_base.yml).
 pub(crate) fn default_clash_header() -> serde_yaml::Mapping {
     let mut config = serde_yaml::Mapping::new();
-    // ── Basic ports ──
     config.insert("port".into(), 7890.into());
     config.insert("socks-port".into(), 7891.into());
-    config.insert("mixed-port".into(), 7892.into());
     config.insert("allow-lan".into(), true.into());
-    config.insert("bind-address".into(), "0.0.0.0".into());
-    config.insert("mode".into(), "rule".into());
+    config.insert("mode".into(), "Rule".into());
     config.insert("log-level".into(), "info".into());
-    config.insert("ipv6".into(), true.into());
-
-    // ── Performance / Meta features ──
-    config.insert("unified-delay".into(), true.into());
-    config.insert("tcp-concurrent".into(), true.into());
-
-    // ── Global fingerprint for TLS handshake mimicry ──
-    config.insert("global-client-fingerprint".into(), "chrome".into());
-
-    // ── Find-process mode for better traffic detection ──
-    config.insert("find-process-mode".into(), "strict".into());
-
-    // ── Connectivity check ──
-    let check = serde_yaml::Mapping::from_iter([
-        ("enable".into(), true.into()),
-        ("url".into(), DEFAULT_TEST_URL.into()),
-        ("interval".into(), 300.into()),
-    ]);
-    config.insert("connectivity-check".into(), serde_yaml::Value::Mapping(check));
-
-    // ── GEODATA mode ──
-    config.insert("geo-auto-update".into(), true.into());
-    config.insert("geo-update-interval".into(), 24.into());
-
+    config.insert("external-controller".into(), "127.0.0.1:9090".into());
     config
 }
 
@@ -365,13 +339,13 @@ pub fn convert_proxies_to_clash(nodes: &[ProxyNode]) -> Result<String> {
     ]);
 
     let mut config = default_clash_header();
-    config.insert("proxies".into(), serde_yaml::Value::Sequence(entries));
+    config.insert("Proxy".into(), serde_yaml::Value::Sequence(entries));
     config.insert(
-        "proxy-groups".into(),
+        "Proxy Group".into(),
         serde_yaml::Value::Sequence(vec![serde_yaml::Value::Mapping(group)]),
     );
     config.insert(
-        "rules".into(),
+        "Rule".into(),
         serde_yaml::Value::Sequence(vec![ClashRule::Match("Proxy").to_rule_string().into()]),
     );
 
@@ -388,7 +362,7 @@ pub fn convert_enriched_to_clash(
     let all_yaml_names: Vec<serde_yaml::Value> = all_names.iter().map(|n| serde_yaml::Value::String(n.clone())).collect();
 
     let mut config = default_clash_header();
-    config.insert("proxies".into(), serde_yaml::Value::Sequence(entries));
+    config.insert("Proxy".into(), serde_yaml::Value::Sequence(entries));
 
     // ── Build Proxy Groups ──────────────────────────────────────────────
     let mut groups: Vec<serde_yaml::Value> = Vec::new();
@@ -446,12 +420,12 @@ pub fn convert_enriched_to_clash(
             let rule_values: Vec<serde_yaml::Value> = rules.iter()
                 .map(|r| serde_yaml::Value::String(r.to_rule_string()))
                 .collect();
-            config.insert("rules".into(), serde_yaml::Value::Sequence(rule_values));
+            config.insert("Rule".into(), serde_yaml::Value::Sequence(rule_values));
         } else {
             // Smart disabled — fall back to legacy behavior
             groups.push(build_select_group("Proxy", &all_names));
             config.insert(
-                "rules".into(),
+                "Rule".into(),
                 serde_yaml::Value::Sequence(vec!["MATCH,Proxy".into()]),
             );
         }
@@ -459,12 +433,12 @@ pub fn convert_enriched_to_clash(
         // No smart config — legacy behavior
         groups.push(build_select_group("Proxy", &all_names));
         config.insert(
-            "rules".into(),
+            "Rule".into(),
             serde_yaml::Value::Sequence(vec!["MATCH,Proxy".into()]),
         );
     }
 
-    config.insert("proxy-groups".into(), serde_yaml::Value::Sequence(groups));
+    config.insert("Proxy Group".into(), serde_yaml::Value::Sequence(groups));
 
     serde_yaml::to_string(&serde_yaml::Value::Mapping(config)).map_err(Into::into)
 }
@@ -539,22 +513,22 @@ mod tests {
 
         let mapping = parse_clash_yaml(&convert_proxies_to_clash(&[node]).unwrap());
 
-        assert!(mapping.contains_key(&ck("proxies")));
-        assert!(mapping.contains_key(&ck("proxy-groups")));
-        assert!(mapping.contains_key(&ck("rules")));
+        assert!(mapping.contains_key(&ck("Proxy")));
+        assert!(mapping.contains_key(&ck("Proxy Group")));
+        assert!(mapping.contains_key(&ck("Rule")));
 
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(&ck("Proxy")).unwrap().as_sequence().unwrap();
         assert_eq!(proxies.len(), 1);
         let proxy = proxies[0].as_mapping().unwrap();
         assert_eq!(proxy.get(&ck("name")).unwrap().as_str().unwrap(), "test-node");
 
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(&ck("Proxy Group")).unwrap().as_sequence().unwrap();
         assert_eq!(groups.len(), 1);
         let group = groups[0].as_mapping().unwrap();
         assert_eq!(group.get(&ck("name")).unwrap().as_str().unwrap(), "Proxy");
         assert_eq!(group.get(&ck("type")).unwrap().as_str().unwrap(), "select");
 
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(&ck("Rule")).unwrap().as_sequence().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].as_str().unwrap(), "MATCH,Proxy");
     }
@@ -582,7 +556,7 @@ mod tests {
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep1, ep2], Some(&smart)).unwrap());
 
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(&ck("Proxy Group")).unwrap().as_sequence().unwrap();
         // Groups: JP Auto, JP select, SG Auto, SG select, LB, Fallback, Proxy = 7
         assert!(groups.len() >= 6, "expected at least 6 groups, got {}", groups.len());
 
@@ -595,7 +569,7 @@ mod tests {
         assert!(group_names.iter().any(|n| n.contains("Auto")));
         assert!(group_names.iter().any(|n| n.contains("Fallback")));
 
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(&ck("Rule")).unwrap().as_sequence().unwrap();
         let rule_strs: Vec<&str> = rules.iter().filter_map(|r| r.as_str()).collect();
         assert!(rule_strs.iter().any(|r| r.contains("chatgpt")));
         assert!(rule_strs.iter().any(|r| r.contains("GEOIP,CN,DIRECT")));
@@ -619,7 +593,7 @@ mod tests {
     fn test_legacy_empty_input() {
         let yaml = convert_proxies_to_clash(&[]).unwrap();
         let mapping = parse_clash_yaml(&yaml);
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(&ck("Proxy")).unwrap().as_sequence().unwrap();
         assert!(proxies.is_empty());
     }
 
@@ -643,10 +617,10 @@ mod tests {
         let yaml = convert_enriched_to_clash(&[], Some(&smart)).unwrap();
         let mapping = parse_clash_yaml(&yaml);
         // Should still produce valid YAML with empty proxies
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(&ck("Proxy")).unwrap().as_sequence().unwrap();
         assert!(proxies.is_empty());
         // Groups should still be generated (at least Proxy)
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(&ck("Proxy Group")).unwrap().as_sequence().unwrap();
         assert!(!groups.is_empty());
     }
 
@@ -655,30 +629,28 @@ mod tests {
     #[test]
     fn test_default_clash_header_contains_expected_keys() {
         let header = default_clash_header();
+        // Core fields (subconverter standard: simple_base.yml / all_base.tpl)
         assert!(header.contains_key(&ck("port")));
         assert!(header.contains_key(&ck("socks-port")));
-        assert!(header.contains_key(&ck("mixed-port")));
         assert!(header.contains_key(&ck("allow-lan")));
         assert!(header.contains_key(&ck("mode")));
         assert!(header.contains_key(&ck("log-level")));
-        assert!(header.contains_key(&ck("ipv6")));
-        assert!(header.contains_key(&ck("unified-delay")));
-        assert!(header.contains_key(&ck("tcp-concurrent")));
-        assert!(header.contains_key(&ck("connectivity-check")));
+        assert!(header.contains_key(&ck("external-controller")));
+        // Subconverter does not include Meta-specific fields in the base header
+        assert!(!header.contains_key(&ck("mixed-port")));
+        assert!(!header.contains_key(&ck("ipv6")));
+        assert!(!header.contains_key(&ck("unified-delay")));
+        assert!(!header.contains_key(&ck("tcp-concurrent")));
+        assert!(!header.contains_key(&ck("connectivity-check")));
+        assert!(!header.contains_key(&ck("global-client-fingerprint")));
+        assert!(!header.contains_key(&ck("find-process-mode")));
+        assert!(!header.contains_key(&ck("geo-auto-update")));
+        // Values
         assert_eq!(header.get(&ck("port")).unwrap().as_i64().unwrap(), 7890);
         assert_eq!(header.get(&ck("socks-port")).unwrap().as_i64().unwrap(), 7891);
-        assert_eq!(header.get(&ck("mixed-port")).unwrap().as_i64().unwrap(), 7892);
         assert_eq!(header.get(&ck("allow-lan")).unwrap().as_bool().unwrap(), true);
-        assert_eq!(header.get(&ck("mode")).unwrap().as_str().unwrap(), "rule");
+        assert_eq!(header.get(&ck("mode")).unwrap().as_str().unwrap(), "Rule");
         assert_eq!(header.get(&ck("log-level")).unwrap().as_str().unwrap(), "info");
-        assert_eq!(header.get(&ck("ipv6")).unwrap().as_bool().unwrap(), true);
-        assert_eq!(header.get(&ck("unified-delay")).unwrap().as_bool().unwrap(), true);
-        assert_eq!(header.get(&ck("tcp-concurrent")).unwrap().as_bool().unwrap(), true);
-
-        let check = header.get(&ck("connectivity-check")).unwrap().as_mapping().unwrap();
-        assert_eq!(check.get(&ck("enable")).unwrap().as_bool().unwrap(), true);
-        assert_eq!(check.get(&ck("url")).unwrap().as_str().unwrap(), "https://www.gstatic.com/generate_204");
-        assert_eq!(check.get(&ck("interval")).unwrap().as_i64().unwrap(), 300);
     }
 
     // ── Round-trip: all proxy types through legacy conversion ─────────────────
@@ -805,7 +777,7 @@ mod tests {
         ];
 
         let mapping = parse_clash_yaml(&convert_proxies_to_clash(&nodes).unwrap());
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(&ck("Proxy")).unwrap().as_sequence().unwrap();
         assert_eq!(proxies.len(), 11, "all 11 proxy types should be present");
 
         // Every proxy must have name, server, port, type
@@ -876,7 +848,7 @@ mod tests {
         };
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep], Some(&smart)).unwrap());
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(&ck("Proxy Group")).unwrap().as_sequence().unwrap();
         // Always at minimum: region auto group, region select group, Proxy group
         assert!(groups.len() >= 3, "expected at least 3 groups, got {}", groups.len());
         let group_names: Vec<&str> = groups
@@ -912,7 +884,7 @@ mod tests {
         };
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep], Some(&smart)).unwrap());
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(&ck("Rule")).unwrap().as_sequence().unwrap();
         let rule_strs: Vec<&str> = rules.iter().filter_map(|r| r.as_str()).collect();
         assert!(rule_strs.iter().any(|r| r.contains("custom.example.com")),
             "custom rules should appear in output: {:?}", rule_strs);
