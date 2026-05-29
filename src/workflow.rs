@@ -395,6 +395,35 @@ async fn run_crawlers(
         });
     }
 
+    // ── Discord ──
+    if crawl_cfg.discord.enable {
+        let discord_cfg = crawl_cfg.discord.clone();
+        let settings = config.settings.clone();
+        spawn_crawler(&mut handles, &client, "Discord", move |_client| async move {
+            Ok(crawl::crawl_discord(&discord_cfg, &settings).await)
+        });
+    }
+
+    // ── RSS ──
+    if crawl_cfg.rss.enable {
+        let rss_cfg = crawl_cfg.rss.clone();
+        let settings = config.settings.clone();
+        spawn_crawler(&mut handles, &client, "RSS", move |_client| async move {
+            Ok(crawl::crawl_rss(&rss_cfg, &settings).await)
+        });
+    }
+
+    // ── Proxy aggregation sites ──
+    for site in &crawl_cfg.proxy_sites {
+        if !site.enable { continue; }
+        let site_cfg = site.clone();
+        let site_name = site_cfg.url.clone().unwrap_or_else(|| "unknown".to_string());
+        let settings = config.settings.clone();
+        spawn_crawler(&mut handles, &client, &format!("Proxy site: {}", site_name), move |_client| async move {
+            Ok(crawl::crawl_proxy_site(&site_cfg, &settings).await)
+        });
+    }
+
     // ── Collect all results ──
     let mut all_urls: Vec<String> = Vec::new();
     for handle in handles {

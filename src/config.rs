@@ -161,11 +161,94 @@ pub struct CrawlConfig {
     #[serde(default)]
     pub repositories: Vec<RepoCrawlConfig>,
 
+    /// Discord bot-based channel crawling
+    #[serde(default)]
+    pub discord: DiscordCrawlConfig,
+
+    /// RSS/Atom feed monitoring
+    #[serde(default)]
+    pub rss: RssCrawlConfig,
+
+    /// Known proxy aggregation sites
+    #[serde(default)]
+    pub proxy_sites: Vec<ProxySiteConfig>,
+
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
 }
 
 fn default_threshold() -> usize { 5 }
+
+// ── New Source: Discord ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct DiscordCrawlConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    /// Discord bot token (required)
+    #[serde(default)]
+    pub bot_token: String,
+
+    /// Guild (server) ID to crawl
+    #[serde(default)]
+    pub guild_id: String,
+
+    /// Channel IDs to monitor (empty = all accessible)
+    #[serde(default)]
+    pub channels: Vec<String>,
+
+    /// Max messages to fetch per channel
+    #[serde(default = "default_discord_limit")]
+    pub limit: usize,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
+
+fn default_discord_limit() -> usize { 50 }
+
+// ── New Source: RSS/Atom ───────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct RssCrawlConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    /// RSS/Atom feed URLs to monitor
+    #[serde(default)]
+    pub urls: Vec<String>,
+
+    /// Max entries to process per feed
+    #[serde(default = "default_rss_limit")]
+    pub limit: usize,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
+
+fn default_rss_limit() -> usize { 50 }
+
+// ── New Source: Proxy Aggregation Sites ────────────────────────────────────
+
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct ProxySiteConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    /// URL of the proxy aggregation page
+    pub url: Option<String>,
+
+    /// Regex pattern to filter proxy content
+    #[serde(default)]
+    pub include: String,
+
+    #[serde(default)]
+    pub exclude: String,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct CrawlPersistConfig {
@@ -211,6 +294,10 @@ pub struct TelegramCrawlConfig {
 
     #[serde(default)]
     pub exclude: String,
+
+    /// Enable crawling media group/channel history
+    #[serde(default)]
+    pub history_depth: usize,
 
     #[serde(default)]
     pub users: HashMap<String, TelegramUserConfig>,
@@ -346,6 +433,10 @@ pub struct PageCrawlConfig {
     #[serde(default)]
     pub depth: usize,
 
+    /// Number of pages to crawl concurrently (0 or 1 = serial)
+    #[serde(default)]
+    pub concurrency: usize,
+
     #[serde(default)]
     pub push_to: Vec<String>,
 }
@@ -434,6 +525,10 @@ pub struct GithubCrawlConfig {
     /// Search repository README files for proxy links
     #[serde(default)]
     pub search_readme: bool,
+
+    /// Search file contents in repositories for proxy links
+    #[serde(default)]
+    pub search_files: bool,
 
     #[serde(default)]
     pub users: HashMap<String, GithubUserConfig>,

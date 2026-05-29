@@ -806,6 +806,830 @@ pub fn parse_anytls(raw_url: &str) -> Result<ProxyNode> {
     }))
 }
 
+// ── Subscription Format Parsers ──────────────────────────────────────────
+
+/// Parse Sing-box subscription format (JSON array) into proxy nodes.
+///
+/// Sing-box format is a JSON array of server objects, e.g.:
+/// ```json
+/// [{"type":"ss","tag":"my-server","server":"1.2.3.4","server_port":8388,"method":"chacha20-ietf-poly1305","password":"mypass"}]
+/// ```
+pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
+    let Ok(json) = serde_json::from_str::<Vec<serde_json::Value>>(data) else {
+        return Vec::new();
+    };
+
+    let mut proxies = Vec::new();
+    for obj in &json {
+        let type_ = match obj.get("type").and_then(|v| v.as_str()) {
+            Some(t) => t,
+            None => continue,
+        };
+        let server = match obj.get("server").and_then(|v| v.as_str()) {
+            Some(s) => s.to_string(),
+            None => continue,
+        };
+        let port = match obj.get("server_port").and_then(|v| v.as_u64()) {
+            Some(p) => p as u16,
+            None => continue,
+        };
+        let tag = obj
+            .get("tag")
+            .and_then(|v| v.as_str())
+            .map(|s| s.to_string())
+            .unwrap_or_else(|| default_name(&server, port, type_));
+
+        match type_ {
+            "ss" | "shadowsocks" => {
+                let method = obj
+                    .get("method")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("aes-128-gcm")
+                    .to_string();
+                let password = obj
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Shadowsocks(ShadowsocksConfig {
+                    name: tag,
+                    server,
+                    port,
+                    cipher: method,
+                    password,
+                    plugin: None,
+                    plugin_opts: None,
+                    udp: None,
+                }));
+            }
+            "vmess" => {
+                let uuid = obj
+                    .get("uuid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let alter_id = obj
+                    .get("alter_id")
+                    .or_else(|| obj.get("aid"))
+                    .and_then(|v| match v {
+                        serde_json::Value::Number(n) => Some(n.to_string()),
+                        serde_json::Value::String(s) => Some(s.clone()),
+                        _ => None,
+                    });
+                let cipher = obj
+                    .get("security")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let tls = obj
+                    .get("tls")
+                    .and_then(|v| match v {
+                        serde_json::Value::Bool(b) => Some(*b),
+                        serde_json::Value::String(s) => Some(s == "tls" || s == "true"),
+                        _ => None,
+                    });
+                let network = obj
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let servername = obj
+                    .get("sni")
+                    .or_else(|| obj.get("servername"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::VMess(VMessConfig {
+                    name: tag,
+                    server,
+                    port,
+                    uuid,
+                    alter_id,
+                    cipher,
+                    tls,
+                    skip_cert_verify: None,
+                    servername,
+                    network,
+                    ws_path: None,
+                    ws_headers: None,
+                    udp: None,
+                    packet_encoding: None,
+                }));
+            }
+            "trojan" => {
+                let password = obj
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let sni = obj
+                    .get("sni")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Trojan(TrojanConfig {
+                    name: tag,
+                    server,
+                    port,
+                    password,
+                    sni,
+                    alpn: None,
+                    skip_cert_verify: None,
+                    udp: None,
+                }));
+            }
+            "vless" => {
+                let uuid = obj
+                    .get("uuid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let tls = obj
+                    .get("tls")
+                    .and_then(|v| match v {
+                        serde_json::Value::Bool(b) => Some(*b),
+                        serde_json::Value::String(s) => Some(s == "tls" || s == "true"),
+                        _ => None,
+                    });
+                let network = obj
+                    .get("network")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let servername = obj
+                    .get("sni")
+                    .or_else(|| obj.get("servername"))
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let flow = obj
+                    .get("flow")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::VLESS(VLESSConfig {
+                    name: tag,
+                    server,
+                    port,
+                    uuid,
+                    tls,
+                    skip_cert_verify: None,
+                    servername,
+                    network,
+                    ws_path: None,
+                    ws_headers: None,
+                    flow,
+                    packet_encoding: None,
+                }));
+            }
+            "hysteria2" | "hy2" => {
+                let password = obj
+                    .get("password")
+                    .or_else(|| obj.get("auth"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let sni = obj
+                    .get("sni")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let obfs = obj
+                    .get("obfs")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let obfs_password = obj
+                    .get("obfs_password")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Hysteria2(Hysteria2Config {
+                    name: tag,
+                    server,
+                    port,
+                    password,
+                    sni,
+                    skip_cert_verify: None,
+                    alpn: None,
+                    obfs,
+                    obfs_password,
+                }));
+            }
+            "hysteria" | "hy" => {
+                let auth_str = obj
+                    .get("auth")
+                    .or_else(|| obj.get("password"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let up = obj
+                    .get("up")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n.to_string());
+                let down = obj
+                    .get("down")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n.to_string());
+                let sni = obj
+                    .get("sni")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let obfs = obj
+                    .get("obfs")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Hysteria(HysteriaConfig {
+                    name: tag,
+                    server,
+                    port,
+                    auth_str,
+                    protocol: None,
+                    up,
+                    down,
+                    sni,
+                    skip_cert_verify: None,
+                    alpn: None,
+                    obfs,
+                }));
+            }
+            "tuic" => {
+                let token = obj
+                    .get("token")
+                    .or_else(|| obj.get("password"))
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let sni = obj
+                    .get("sni")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Tuic(TuicConfig {
+                    name: tag,
+                    server,
+                    port,
+                    token,
+                    ip: None,
+                    sni,
+                    skip_cert_verify: None,
+                    alpn: None,
+                    udp_relay_mode: None,
+                    congestion_controller: None,
+                }));
+            }
+            "http" => {
+                let username = obj
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let password = obj
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Http(HttpConfig {
+                    name: tag,
+                    server,
+                    port,
+                    username,
+                    password,
+                    tls: None,
+                    sni: None,
+                    skip_cert_verify: None,
+                }));
+            }
+            "socks5" => {
+                let username = obj
+                    .get("username")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let password = obj
+                    .get("password")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                proxies.push(ProxyNode::Socks5(Socks5Config {
+                    name: tag,
+                    server,
+                    port,
+                    username,
+                    password,
+                    tls: None,
+                    sni: None,
+                    skip_cert_verify: None,
+                    udp: None,
+                }));
+            }
+            _ => {}
+        }
+    }
+    proxies
+}
+
+/// Parse a single Quantumult X style proxy line into a ProxyNode.
+///
+/// Format: `protocol=host:port, key=value, key=value, ...`
+/// Supported protocols: shadowsocks, vmess, trojan
+fn parse_quantumult_line(line: &str) -> Option<ProxyNode> {
+    let line = line.trim();
+    if line.is_empty() || line.starts_with('#') || line.starts_with("//") {
+        return None;
+    }
+
+    // Split on first `=` to get protocol and the rest
+    let eq_pos = line.find('=')?;
+    let protocol = line[..eq_pos].trim().to_lowercase();
+    let rest = line[eq_pos + 1..].trim();
+
+    // Rest format: `host:port, key=value, key=value, ...`
+    // Split by comma, first part is host:port
+    let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
+    if parts.is_empty() {
+        return None;
+    }
+
+    let host_port = parts[0];
+    let (server, port) = parse_host_port_simple(host_port)?;
+
+    // Parse key=value pairs
+    let mut params = std::collections::HashMap::new();
+    for part in &parts[1..] {
+        if let Some(eq) = part.find('=') {
+            let key = part[..eq].trim().to_lowercase();
+            let val = part[eq + 1..].trim().to_string();
+            params.insert(key, val);
+        }
+    }
+
+    let tag = params
+        .remove("tag")
+        .or_else(|| params.remove("remarks"))
+        .or_else(|| params.remove("name"))
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| default_name(&server, port, &protocol));
+
+    match protocol.as_str() {
+        "shadowsocks" | "ss" => {
+            let method = params
+                .remove("method")
+                .or_else(|| params.remove("encrypt-method"))
+                .or_else(|| params.remove("cipher"))
+                .unwrap_or_else(|| "aes-128-gcm".to_string());
+            let password = params.remove("password");
+            let obfs = params.remove("obfs");
+            let obfs_param = params.remove("obfs-host").or_else(|| params.remove("obfs-param"));
+            let plugin = obfs.map(|o| format!("obfs-{}", o));
+            let plugin_opts = obfs_param.map(|p| format!("obfs-host={}", p));
+
+            Some(ProxyNode::Shadowsocks(ShadowsocksConfig {
+                name: tag,
+                server,
+                port,
+                cipher: method,
+                password,
+                plugin,
+                plugin_opts,
+                udp: None,
+            }))
+        }
+        "vmess" => {
+            let uuid = params
+                .remove("password")
+                .or_else(|| params.remove("uuid"))
+                .unwrap_or_default();
+            let cipher = params.remove("method").or_else(|| params.remove("cipher"));
+            let tls_val = params
+                .remove("over-tls")
+                .or_else(|| params.remove("tls"))
+                .map(|s| s == "true" || s == "1");
+            let servername = params
+                .remove("tls-host")
+                .or_else(|| params.remove("sni"))
+                .or_else(|| params.remove("servername"));
+            let network = params.remove("network").or_else(|| {
+                if params.remove("ws").map(|s| s == "true").unwrap_or(false) {
+                    Some("ws".to_string())
+                } else {
+                    None
+                }
+            });
+            let ws_path = params.remove("ws-path").or_else(|| params.remove("path"));
+
+            Some(ProxyNode::VMess(VMessConfig {
+                name: tag,
+                server,
+                port,
+                uuid,
+                alter_id: None,
+                cipher,
+                tls: tls_val,
+                skip_cert_verify: None,
+                servername,
+                network,
+                ws_path,
+                ws_headers: None,
+                udp: None,
+                packet_encoding: None,
+            }))
+        }
+        "trojan" => {
+            let password = params
+                .remove("password")
+                .unwrap_or_default();
+            let sni = params
+                .remove("sni")
+                .or_else(|| params.remove("tls-host"))
+                .or_else(|| params.remove("servername"));
+
+            Some(ProxyNode::Trojan(TrojanConfig {
+                name: tag,
+                server,
+                port,
+                password,
+                sni,
+                alpn: None,
+                skip_cert_verify: None,
+                udp: None,
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Parse host:port string into (String, u16)
+fn parse_host_port_simple(input: &str) -> Option<(String, u16)> {
+    let input = input.trim();
+    if let Some(colon) = input.rfind(':') {
+        let host = input[..colon].to_string();
+        let port: u16 = input[colon + 1..].parse().ok()?;
+        Some((host, port))
+    } else {
+        None
+    }
+}
+
+/// Parse Quantumult X subscription format into proxy nodes.
+///
+/// Quantumult X format is line-based:
+/// - `shadowsocks=host:port, method=chacha20, password=xxx, tag=my-server`
+/// - `vmess=host:port, method=chacha20-ietf-poly1305, password=xxx, tag=my-server`
+/// - `trojan=host:port, password=xxx, over-tls=true, tag=my-server`
+///
+/// Also handles base64-encoded quantumult subscriptions (each line is base64).
+pub fn parse_quantumult(data: &str) -> Vec<ProxyNode> {
+    // Collect lines, trying the standard format first
+    let mut proxies: Vec<ProxyNode> = Vec::new();
+
+    for line in data.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+
+        // Try direct parse
+        if let Some(node) = parse_quantumult_line(trimmed) {
+            proxies.push(node);
+            continue;
+        }
+
+        // Try base64 decode on the line (common in Quantumult X subscriptions)
+        if is_likely_base64_line(trimmed) {
+            if let Ok(decoded) = b64_decode_standard(trimmed) {
+                if let Some(node) = parse_quantumult_line(decoded.trim()) {
+                    proxies.push(node);
+                }
+            }
+        }
+    }
+
+    proxies
+}
+
+/// Check if a string looks like a base64-encoded line
+fn is_likely_base64_line(s: &str) -> bool {
+    let s = s.trim();
+    if s.len() < 10 {
+        return false;
+    }
+    s.chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=' || c == '\n' || c == '\r')
+}
+
+/// Parse Surfboard subscription format into proxy nodes.
+///
+/// Surfboard format has a `[Proxy]` section with lines like:
+/// ```text
+/// [Proxy]
+/// ss = ss, 1.2.3.4, 8388, encrypt-method=chacha20-ietf-poly1305, password=mypass, udp=true
+/// vmess = vmess, 1.2.3.4, 443, username=xxx, ws=true, ws-path=/path
+/// trojan = trojan, 1.2.3.4, 443, password=xxx, udp=true
+/// ```
+///
+/// Format per line: `name = type, server, port, key=value, key=value, ...`
+pub fn parse_surfboard(data: &str) -> Vec<ProxyNode> {
+    let mut proxies = Vec::new();
+    let mut in_proxy_section = false;
+
+    for line in data.lines() {
+        let trimmed = line.trim();
+
+        // Section headers
+        if trimmed.starts_with('[') {
+            in_proxy_section = trimmed.eq_ignore_ascii_case("[Proxy]");
+            continue;
+        }
+
+        if !in_proxy_section || trimmed.is_empty() || trimmed.starts_with('#') || trimmed.starts_with(';')
+        {
+            continue;
+        }
+
+        if let Some(node) = parse_surfboard_line(trimmed) {
+            proxies.push(node);
+        }
+    }
+
+    proxies
+}
+
+/// Parse a single Surfboard proxy line.
+///
+/// Format: `name = type, server, port, key=value, ...`
+fn parse_surfboard_line(line: &str) -> Option<ProxyNode> {
+    let line = line.trim();
+
+    // Split on first `=`
+    let eq_pos = line.find('=')?;
+    let name = line[..eq_pos].trim().to_string();
+    let rest = line[eq_pos + 1..].trim();
+
+    // Split remaining by comma
+    let parts: Vec<&str> = rest.split(',').map(|s| s.trim()).collect();
+    if parts.len() < 3 {
+        return None;
+    }
+
+    let proxy_type = parts[0].to_lowercase();
+    let server = parts[1].to_string();
+    let port: u16 = parts[2].parse().ok()?;
+
+    // Parse key=value pairs from remaining parts
+    let mut params = std::collections::HashMap::new();
+    for part in &parts[3..] {
+        if let Some(eq) = part.find('=') {
+            let key = part[..eq].trim().to_lowercase();
+            let val = part[eq + 1..].trim().to_string();
+            params.insert(key, val);
+        }
+    }
+
+    match proxy_type.as_str() {
+        "ss" | "shadowsocks" => {
+            let cipher = params
+                .remove("encrypt-method")
+                .or_else(|| params.remove("method"))
+                .or_else(|| params.remove("cipher"))
+                .unwrap_or_else(|| "aes-128-gcm".to_string());
+            let password = params.remove("password");
+            let udp = params
+                .remove("udp")
+                .map(|s| s == "true" || s == "1");
+
+            Some(ProxyNode::Shadowsocks(ShadowsocksConfig {
+                name,
+                server,
+                port,
+                cipher,
+                password,
+                plugin: None,
+                plugin_opts: None,
+                udp,
+            }))
+        }
+        "vmess" => {
+            let uuid = params
+                .remove("username")
+                .or_else(|| params.remove("uuid"))
+                .unwrap_or_default();
+            let cipher = params
+                .remove("encrypt-method")
+                .or_else(|| params.remove("method"))
+                .or_else(|| params.remove("cipher"));
+            let tls = params
+                .remove("tls")
+                .map(|s| s == "true" || s == "1");
+            let servername = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"));
+            let network = params.remove("network").or_else(|| {
+                if params.remove("ws").map(|s| s == "true").unwrap_or(false) {
+                    Some("ws".to_string())
+                } else {
+                    None
+                }
+            });
+            let ws_path = params
+                .remove("ws-path")
+                .or_else(|| params.remove("path"));
+
+            Some(ProxyNode::VMess(VMessConfig {
+                name,
+                server,
+                port,
+                uuid,
+                alter_id: None,
+                cipher,
+                tls,
+                skip_cert_verify: None,
+                servername,
+                network,
+                ws_path,
+                ws_headers: None,
+                udp: None,
+                packet_encoding: None,
+            }))
+        }
+        "trojan" => {
+            let password = params
+                .remove("password")
+                .unwrap_or_default();
+            let sni = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"));
+            let udp = params
+                .remove("udp")
+                .map(|s| s == "true" || s == "1");
+            let skip_cert_verify = params
+                .remove("skip-cert-verify")
+                .map(|s| s == "true" || s == "1");
+
+            Some(ProxyNode::Trojan(TrojanConfig {
+                name,
+                server,
+                port,
+                password,
+                sni,
+                alpn: None,
+                skip_cert_verify,
+                udp,
+            }))
+        }
+        "vless" => {
+            let uuid = params
+                .remove("uuid")
+                .or_else(|| params.remove("username"))
+                .unwrap_or_default();
+            let tls = params
+                .remove("tls")
+                .map(|s| s == "true" || s == "1");
+            let servername = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"));
+            let network = params.remove("network").or_else(|| {
+                if params.remove("ws").map(|s| s == "true").unwrap_or(false) {
+                    Some("ws".to_string())
+                } else {
+                    None
+                }
+            });
+            let ws_path = params
+                .remove("ws-path")
+                .or_else(|| params.remove("path"));
+            let flow = params.remove("flow");
+
+            Some(ProxyNode::VLESS(VLESSConfig {
+                name,
+                server,
+                port,
+                uuid,
+                tls,
+                skip_cert_verify: None,
+                servername,
+                network,
+                ws_path,
+                ws_headers: None,
+                flow,
+                packet_encoding: None,
+            }))
+        }
+        "hysteria2" | "hy2" => {
+            let password = params
+                .remove("password")
+                .unwrap_or_default();
+            let sni = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"));
+            let obfs = params.remove("obfs");
+
+            Some(ProxyNode::Hysteria2(Hysteria2Config {
+                name,
+                server,
+                port,
+                password,
+                sni,
+                skip_cert_verify: None,
+                alpn: None,
+                obfs,
+                obfs_password: None,
+            }))
+        }
+        "http" => {
+            let username = params
+                .remove("username")
+                .unwrap_or_default();
+            let password = params.remove("password");
+            let tls = params
+                .remove("tls")
+                .map(|s| s == "true" || s == "1");
+
+            Some(ProxyNode::Http(HttpConfig {
+                name,
+                server,
+                port,
+                username,
+                password,
+                tls,
+                sni: None,
+                skip_cert_verify: None,
+            }))
+        }
+        "socks5" => {
+            let username = params
+                .remove("username")
+                .unwrap_or_default();
+            let password = params.remove("password");
+            let tls = params
+                .remove("tls")
+                .map(|s| s == "true" || s == "1");
+            let udp = params
+                .remove("udp")
+                .map(|s| s == "true" || s == "1");
+
+            Some(ProxyNode::Socks5(Socks5Config {
+                name,
+                server,
+                port,
+                username,
+                password,
+                tls,
+                sni: None,
+                skip_cert_verify: None,
+                udp,
+            }))
+        }
+        _ => None,
+    }
+}
+
+/// Parse subscription text by detecting format and dispatching to the appropriate parser.
+///
+/// Detection order:
+/// 1. Sing-box JSON array (starts with `[`, contains `"type"` + `"server"`)
+/// 2. Surfboard (contains `[Proxy]` section)
+/// 3. Quantumult X (lines matching `protocol=host:port,` pattern)
+///
+/// Returns all parsed proxies, or empty Vec if no format matches.
+/// The caller should fall through to standard URL-based parsing if empty.
+pub fn parse_subscribe(text: &str) -> Vec<ProxyNode> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    // 1. Sing-box detection: JSON array with proxy-like objects
+    if trimmed.starts_with('[') {
+        if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
+            if v.iter().any(|o| {
+                o.get("type")
+                    .and_then(|t| t.as_str())
+                    .is_some()
+                    && o.get("server").and_then(|s| s.as_str()).is_some()
+            }) {
+                let proxies = parse_singbox(trimmed);
+                if !proxies.is_empty() {
+                    return proxies;
+                }
+            }
+        }
+    }
+
+    // 2. Surfboard detection: contains [Proxy] section
+    if trimmed.contains("[Proxy]") || trimmed.contains("[proxy]") {
+        let proxies = parse_surfboard(trimmed);
+        if !proxies.is_empty() {
+            return proxies;
+        }
+    }
+
+    // 3. Quantumult X detection: lines protocol=host:port, ...
+    if trimmed.lines().any(|l| {
+        let l = l.trim();
+        !l.is_empty()
+            && !l.starts_with('#')
+            && !l.starts_with("//")
+            && (l.starts_with("shadowsocks=")
+                || l.starts_with("ss=")
+                || l.starts_with("vmess=")
+                || l.starts_with("trojan="))
+    }) {
+        let proxies = parse_quantumult(trimmed);
+        if !proxies.is_empty() {
+            return proxies;
+        }
+    }
+
+    Vec::new()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1077,5 +1901,259 @@ mod tests {
         let node = parse_tuic("tuic://uuid:token@1.2.3.4:443?sni=test.com#South+Korea").unwrap();
         assert!(!node.name().contains('+'), "TUIC name should not contain '+': {}", node.name());
         assert!(node.name().contains("South Korea"), "TUIC name should have space: {}", node.name());
+    }
+
+    #[test]
+    fn test_parse_singbox_ss() {
+        let data = r#"[{"type":"ss","tag":"sg-01","server":"1.2.3.4","server_port":8388,"method":"chacha20-ietf-poly1305","password":"mypass"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Shadowsocks(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.port, 8388);
+            assert_eq!(cfg.cipher, "chacha20-ietf-poly1305");
+            assert_eq!(cfg.password.as_deref(), Some("mypass"));
+            assert_eq!(cfg.name, "sg-01");
+        } else {
+            panic!("expected Shadowsocks variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_vmess() {
+        let data = r#"[{"type":"vmess","tag":"vmess-01","server":"1.2.3.4","server_port":443,"uuid":"abc-def-ghi","security":"auto","tls":true,"network":"ws"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::VMess(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.uuid, "abc-def-ghi");
+            assert_eq!(cfg.tls, Some(true));
+            assert_eq!(cfg.network.as_deref(), Some("ws"));
+        } else {
+            panic!("expected VMess variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_trojan() {
+        let data = r#"[{"type":"trojan","tag":"tro-jp","server":"5.6.7.8","server_port":443,"password":"pass123","sni":"example.com"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Trojan(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "5.6.7.8");
+            assert_eq!(cfg.password, "pass123");
+            assert_eq!(cfg.sni.as_deref(), Some("example.com"));
+        } else {
+            panic!("expected Trojan variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_hysteria2() {
+        let data = r#"[{"type":"hysteria2","tag":"hy2-01","server":"1.2.3.4","server_port":8443,"password":"auth123","sni":"test.com"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Hysteria2(cfg) = &proxies[0] {
+            assert_eq!(cfg.password, "auth123");
+            assert_eq!(cfg.sni.as_deref(), Some("test.com"));
+        } else {
+            panic!("expected Hysteria2 variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_vless() {
+        let data = r#"[{"type":"vless","tag":"vl-01","server":"1.2.3.4","server_port":443,"uuid":"abc-123","tls":true,"flow":"xtls-rprx-vision","network":"tcp"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::VLESS(cfg) = &proxies[0] {
+            assert_eq!(cfg.uuid, "abc-123");
+            assert_eq!(cfg.flow.as_deref(), Some("xtls-rprx-vision"));
+        } else {
+            panic!("expected VLESS variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_tuic() {
+        let data = r#"[{"type":"tuic","tag":"tu-01","server":"1.2.3.4","server_port":443,"token":"mytoken","sni":"example.com"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Tuic(cfg) = &proxies[0] {
+            assert_eq!(cfg.token, "mytoken");
+            assert_eq!(cfg.sni.as_deref(), Some("example.com"));
+        } else {
+            panic!("expected Tuic variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_invalid_json() {
+        let proxies = parse_singbox("not json");
+        assert!(proxies.is_empty(), "invalid JSON should return empty");
+    }
+
+    #[test]
+    fn test_parse_singbox_empty_array() {
+        let proxies = parse_singbox("[]");
+        assert!(proxies.is_empty());
+    }
+
+    #[test]
+    fn test_parse_singbox_multiple_proxies() {
+        let data = r#"[
+            {"type":"ss","tag":"s1","server":"1.1.1.1","server_port":1111,"method":"aes","password":"p1"},
+            {"type":"trojan","tag":"t1","server":"2.2.2.2","server_port":2222,"password":"p2"}
+        ]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 2, "should parse both entries");
+    }
+
+    #[test]
+    fn test_parse_quantumult_shadowsocks() {
+        let data = "shadowsocks=1.2.3.4:8443, method=chacha20, password=pass123, tag=my-ss";
+        let proxies = parse_quantumult(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Shadowsocks(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.port, 8443);
+            assert_eq!(cfg.cipher, "chacha20");
+            assert_eq!(cfg.password.as_deref(), Some("pass123"));
+            assert_eq!(cfg.name, "my-ss");
+        } else {
+            panic!("expected Shadowsocks variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_quantumult_vmess() {
+        let data = r#"vmess=1.2.3.4:443, method=aes-128-gcm, password=uuid-here, tag=my-vm"#;
+        let proxies = parse_quantumult(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::VMess(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.port, 443);
+            assert_eq!(cfg.uuid, "uuid-here");
+        } else {
+            panic!("expected VMess variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_quantumult_trojan() {
+        let data = "trojan=1.2.3.4:443, password=pass456, over-tls=true, tag=my-tj";
+        let proxies = parse_quantumult(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Trojan(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.password, "pass456");
+        } else {
+            panic!("expected Trojan variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_quantumult_no_tag() {
+        let data = "shadowsocks=1.2.3.4:8388, method=aes-256-gcm, password=p123";
+        let proxies = parse_quantumult(data);
+        assert_eq!(proxies.len(), 1, "should parse even without tag");
+    }
+
+    #[test]
+    fn test_parse_quantumult_empty() {
+        let proxies = parse_quantumult("");
+        assert!(proxies.is_empty());
+    }
+
+    #[test]
+    fn test_parse_surfboard_ss() {
+        let data = "\
+[Proxy]
+ss = ss, 1.2.3.4, 8388, encrypt-method=chacha20-ietf-poly1305, password=pass123, udp=true";
+        let proxies = parse_surfboard(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Shadowsocks(cfg) = &proxies[0] {
+            assert_eq!(cfg.server, "1.2.3.4");
+            assert_eq!(cfg.port, 8388);
+            assert_eq!(cfg.cipher, "chacha20-ietf-poly1305");
+            assert_eq!(cfg.password.as_deref(), Some("pass123"));
+        } else {
+            panic!("expected Shadowsocks variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_surfboard_vmess() {
+        let data = "\
+[Proxy]
+vmess = vmess, 1.2.3.4, 443, username=abc-123, ws=true, ws-path=/api, tls=true";
+        let proxies = parse_surfboard(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::VMess(cfg) = &proxies[0] {
+            assert_eq!(cfg.uuid, "abc-123");
+            assert!(cfg.tls.unwrap_or(false), "tls should be true");
+        } else {
+            panic!("expected VMess variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_surfboard_trojan() {
+        let data = "\
+[Proxy]
+trojan = trojan, 1.2.3.4, 443, password=xyz789, sni=example.com, udp=true";
+        let proxies = parse_surfboard(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Trojan(cfg) = &proxies[0] {
+            assert_eq!(cfg.password, "xyz789");
+            assert_eq!(cfg.sni.as_deref(), Some("example.com"));
+        } else {
+            panic!("expected Trojan variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_surfboard_no_section() {
+        let proxies = parse_surfboard("just some text without proxy section");
+        assert!(proxies.is_empty());
+    }
+
+    #[test]
+    fn test_parse_surfboard_multiple_entries() {
+        let data = "\
+[Proxy]
+ss1 = ss, 1.1.1.1, 1111, encrypt-method=aes-256-gcm, password=p1
+ss2 = ss, 2.2.2.2, 2222, encrypt-method=chacha20, password=p2";
+        let proxies = parse_surfboard(data);
+        assert_eq!(proxies.len(), 2);
+    }
+
+    #[test]
+    fn test_parse_subscribe_singbox_dispatch() {
+        let data = r#"[{"type":"ss","tag":"s1","server":"1.1.1.1","server_port":1111,"method":"aes","password":"p1"}]"#;
+        let proxies = parse_subscribe(data);
+        assert_eq!(proxies.len(), 1, "should detect and dispatch to sing-box parser");
+    }
+
+    #[test]
+    fn test_parse_subscribe_surfboard_dispatch() {
+        let data = "\
+[Proxy]
+test = ss, 1.2.3.4, 8388, encrypt-method=aes, password=p1";
+        let proxies = parse_subscribe(data);
+        assert_eq!(proxies.len(), 1, "should detect and dispatch to surfboard parser");
+    }
+
+    #[test]
+    fn test_parse_subscribe_quantumult_dispatch() {
+        let data = "shadowsocks=1.2.3.4:8388, method=chacha20, password=pass, tag=ss1";
+        let proxies = parse_subscribe(data);
+        assert_eq!(proxies.len(), 1, "should detect and dispatch to quantumult parser");
+    }
+
+    #[test]
+    fn test_parse_subscribe_unknown_format() {
+        let proxies = parse_subscribe("just some regular text");
+        assert!(proxies.is_empty(), "unknown format should return empty");
     }
 }
