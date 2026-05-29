@@ -1,5 +1,7 @@
 use std::collections::HashMap;
 
+use serde_yaml::{Number, Value};
+
 use crate::config::SmartGroupConfig;
 use crate::error::*;
 use crate::geoip;
@@ -127,11 +129,11 @@ pub(crate) fn build_auto_group(name: &str, proxies: &[String], group_type: &str,
 
     if group_type == "url-test" {
         map.insert("url".into(), test_url.into());
-        map.insert("interval".into(), "300".into());
-        map.insert("tolerance".into(), "50".into());
+        map.insert("interval".into(), Value::Number(Number::from(300u64)));
+        map.insert("tolerance".into(), Value::Number(Number::from(50u64)));
     } else if group_type == "fallback" {
         map.insert("url".into(), test_url.into());
-        map.insert("interval".into(), "300".into());
+        map.insert("interval".into(), Value::Number(Number::from(300u64)));
     }
 
     serde_yaml::Value::Mapping(map)

@@ -328,8 +328,12 @@ impl VMessConfig {
         m.insert("port".into(), Value::Number(Number::from(self.port)));
         m.insert("type".into(), "vmess".into());
         m.insert("uuid".into(), self.uuid.as_str().into());
-        if let Some(ref v) = self.alter_id { m.insert("alterId".into(), v.as_str().into()); }
-        if let Some(ref v) = self.cipher { m.insert("cipher".into(), v.as_str().into()); }
+        if let Some(ref v) = self.alter_id {
+            if let Ok(n) = v.parse::<u64>() {
+                m.insert("alterId".into(), Value::Number(Number::from(n)));
+            }
+        }
+        m.insert("cipher".into(), self.cipher.as_deref().unwrap_or("auto").into());
         if let Some(v) = self.tls { m.insert("tls".into(), v.into()); }
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
