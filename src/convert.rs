@@ -27,25 +27,44 @@ impl ClashRule {
     }
 }
 
+/// Default health-check URL used throughout the Clash config generation.
+const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
+
 /// Top-level Clash config header keys shared by all output modes.
+/// Includes modern Clash Meta features for better compatibility.
 pub(crate) fn default_clash_header() -> serde_yaml::Mapping {
     let mut config = serde_yaml::Mapping::new();
+    // ── Basic ports ──
     config.insert("port".into(), 7890.into());
     config.insert("socks-port".into(), 7891.into());
     config.insert("mixed-port".into(), 7892.into());
     config.insert("allow-lan".into(), true.into());
+    config.insert("bind-address".into(), "0.0.0.0".into());
     config.insert("mode".into(), "rule".into());
     config.insert("log-level".into(), "info".into());
     config.insert("ipv6".into(), true.into());
+
+    // ── Performance / Meta features ──
     config.insert("unified-delay".into(), true.into());
     config.insert("tcp-concurrent".into(), true.into());
 
+    // ── Global fingerprint for TLS handshake mimicry ──
+    config.insert("global-client-fingerprint".into(), "chrome".into());
+
+    // ── Find-process mode for better traffic detection ──
+    config.insert("find-process-mode".into(), "strict".into());
+
+    // ── Connectivity check ──
     let check = serde_yaml::Mapping::from_iter([
         ("enable".into(), true.into()),
-        ("url".into(), "https://www.gstatic.com/generate_204".into()),
+        ("url".into(), DEFAULT_TEST_URL.into()),
         ("interval".into(), 300.into()),
     ]);
     config.insert("connectivity-check".into(), serde_yaml::Value::Mapping(check));
+
+    // ── GEODATA mode ──
+    config.insert("geo-auto-update".into(), true.into());
+    config.insert("geo-update-interval".into(), 24.into());
 
     config
 }
@@ -58,13 +77,13 @@ fn build_clash_entry(node: &ProxyNode) -> Option<serde_yaml::Value> {
 
 // ── Group By Region ─────────────────────────────────────────────────────────
 
-struct RegionGroup {
-    display: String,
-    proxy_names: Vec<String>,
-    code: String,
+pub(crate) struct RegionGroup {
+    pub(crate) display: String,
+    pub(crate) proxy_names: Vec<String>,
+    pub(crate) code: String,
 }
 
-fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
+pub(crate) fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
     let mut regions: HashMap<String, Vec<String>> = HashMap::new();
     let mut region_emoji: HashMap<String, String> = HashMap::new();
 
@@ -107,7 +126,7 @@ fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
 
 // ── Build Proxy Group ───────────────────────────────────────────────────────
 
-fn build_auto_group(name: &str, proxies: &[String], group_type: &str) -> serde_yaml::Value {
+pub(crate) fn build_auto_group(name: &str, proxies: &[String], group_type: &str, test_url: &str) -> serde_yaml::Value {
     let mut map = serde_yaml::Mapping::new();
     map.insert("name".into(), name.into());
     map.insert("type".into(), group_type.into());
@@ -119,11 +138,11 @@ fn build_auto_group(name: &str, proxies: &[String], group_type: &str) -> serde_y
     map.insert("proxies".into(), serde_yaml::Value::Sequence(proxy_list));
 
     if group_type == "url-test" {
-        map.insert("url".into(), "https://www.gstatic.com/generate_204".into());
+        map.insert("url".into(), test_url.into());
         map.insert("interval".into(), "300".into());
         map.insert("tolerance".into(), "50".into());
     } else if group_type == "fallback" {
-        map.insert("url".into(), "https://www.gstatic.com/generate_204".into());
+        map.insert("url".into(), test_url.into());
         map.insert("interval".into(), "300".into());
     }
 
@@ -158,7 +177,14 @@ pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
             ClashRule::DomainSuffix("perplexity.ai", "Proxy"),
             ClashRule::DomainSuffix("deepseek.com", "Proxy"),
             ClashRule::DomainSuffix("ai.com", "Proxy"),
+            ClashRule::DomainSuffix("grok.com", "Proxy"),
+            ClashRule::DomainSuffix("x.ai", "Proxy"),
+            ClashRule::DomainSuffix("mistral.ai", "Proxy"),
+            ClashRule::DomainSuffix("cohere.ai", "Proxy"),
+            ClashRule::DomainSuffix("huggingface.co", "Proxy"),
+            ClashRule::DomainSuffix("githubcopilot.com", "Proxy"),
             ClashRule::DomainKeyword("aistudio", "Proxy"),
+            ClashRule::DomainKeyword("openai", "Proxy"),
         ]);
     }
 
@@ -166,17 +192,33 @@ pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
         rules.extend([
             ClashRule::DomainSuffix("netflix.com", "Proxy"),
             ClashRule::DomainSuffix("nflxvideo.net", "Proxy"),
+            ClashRule::DomainSuffix("netflix.net", "Proxy"),
             ClashRule::DomainSuffix("disneyplus.com", "Proxy"),
             ClashRule::DomainSuffix("hbomax.com", "Proxy"),
+            ClashRule::DomainSuffix("max.com", "Proxy"),
             ClashRule::DomainSuffix("primevideo.com", "Proxy"),
             ClashRule::DomainSuffix("youtube.com", "Proxy"),
             ClashRule::DomainSuffix("googlevideo.com", "Proxy"),
             ClashRule::DomainSuffix("ytimg.com", "Proxy"),
             ClashRule::DomainSuffix("spotify.com", "Proxy"),
             ClashRule::DomainSuffix("applemusic.com", "Proxy"),
+            ClashRule::DomainSuffix("tv.apple.com", "Proxy"),
+            ClashRule::DomainSuffix("hulu.com", "Proxy"),
+            ClashRule::DomainSuffix("peacocktv.com", "Proxy"),
+            ClashRule::DomainSuffix("paramountplus.com", "Proxy"),
+            ClashRule::DomainSuffix("cbs.com", "Proxy"),
+            ClashRule::DomainSuffix("hbo.com", "Proxy"),
+            ClashRule::DomainSuffix("nowtv.com", "Proxy"),
+            ClashRule::DomainSuffix("bbc.co.uk", "Proxy"),
+            ClashRule::DomainSuffix("bbc.com", "Proxy"),
+            ClashRule::DomainSuffix("iplayer.com", "Proxy"),
+            ClashRule::DomainSuffix("crunchyroll.com", "Proxy"),
+            ClashRule::DomainSuffix("funimation.com", "Proxy"),
             ClashRule::DomainSuffix("bilibili.com", "Proxy"),
             ClashRule::DomainSuffix("tver.jp", "Proxy"),
             ClashRule::DomainSuffix("abema.tv", "Proxy"),
+            ClashRule::DomainSuffix("dmm.co.jp", "Proxy"),
+            ClashRule::DomainSuffix("nicovideo.jp", "Proxy"),
             ClashRule::DomainSuffix("shahid.net", "Proxy"),
             ClashRule::DomainSuffix("hotstar.com", "Proxy"),
             ClashRule::DomainSuffix("iqiyi.com", "Proxy"),
@@ -184,6 +226,9 @@ pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
             ClashRule::DomainSuffix("dailymotion.com", "Proxy"),
             ClashRule::DomainSuffix("tubi.tv", "Proxy"),
             ClashRule::DomainSuffix("pluto.tv", "Proxy"),
+            ClashRule::DomainSuffix("pbs.org", "Proxy"),
+            ClashRule::DomainSuffix("twitch.tv", "Proxy"),
+            ClashRule::DomainSuffix("vimeo.com", "Proxy"),
             ClashRule::DomainKeyword("speedtest", "Proxy"),
         ]);
     }
@@ -205,6 +250,7 @@ pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
             ClashRule::DomainSuffix("slack.com", "Proxy"),
             ClashRule::DomainSuffix("discord.com", "Proxy"),
             ClashRule::DomainSuffix("discordapp.net", "Proxy"),
+            ClashRule::DomainSuffix("discord.gg", "Proxy"),
             ClashRule::DomainSuffix("reddit.com", "Proxy"),
             ClashRule::DomainSuffix("pinterest.com", "Proxy"),
             ClashRule::DomainSuffix("quora.com", "Proxy"),
@@ -212,6 +258,12 @@ pub(crate) fn build_rules(smart: &SmartGroupConfig) -> Vec<ClashRule> {
             ClashRule::DomainSuffix("tumblr.com", "Proxy"),
             ClashRule::DomainSuffix("snapchat.com", "Proxy"),
             ClashRule::DomainSuffix("linkedin.com", "Proxy"),
+            ClashRule::DomainSuffix("threads.net", "Proxy"),
+            ClashRule::DomainSuffix("mastodon.social", "Proxy"),
+            ClashRule::DomainSuffix("bsky.app", "Proxy"),
+            ClashRule::DomainSuffix("telegram.me", "Proxy"),
+            ClashRule::DomainSuffix("t.me", "Proxy"),
+            ClashRule::DomainSuffix("nitter.net", "Proxy"),
         ]);
     }
 
@@ -351,13 +403,11 @@ pub fn convert_enriched_to_clash(
             for region in &regions {
                 let auto_name = format!("{} Auto", region.display);
                 region_group_names.push(auto_name.clone());
-                groups.push(build_auto_group(&auto_name, &region.proxy_names, auto_type));
+                groups.push(build_auto_group(&auto_name, &region.proxy_names, auto_type, DEFAULT_TEST_URL));
 
                 // Also add a select group for manual picking within the region
                 let select_name = region.display.clone();
                 groups.push(build_select_group(&select_name, &region.proxy_names));
-
-                // Add individual proxies to main auto group's proxy list
             }
 
             // Global load-balance group
@@ -379,7 +429,7 @@ pub fn convert_enriched_to_clash(
                 let fb_proxies: Vec<String> = proxies.iter()
                     .map(|ep| ep.node.name().to_string())
                     .collect();
-                groups.push(build_auto_group(fb_name, &fb_proxies, "fallback"));
+                groups.push(build_auto_group(fb_name, &fb_proxies, "fallback", DEFAULT_TEST_URL));
                 region_group_names.push(fb_name.into());
             }
 

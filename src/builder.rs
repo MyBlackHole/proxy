@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::Path;
 
 use regex::Regex;
@@ -8,7 +7,6 @@ use serde_yaml::Value;
 use crate::config::*;
 use crate::convert::*;
 use crate::error::*;
-use crate::geoip;
 use crate::proxy::*;
 use crate::ruleset;
 
@@ -264,54 +262,8 @@ fn build_custom_group_value(cfg: &CustomGroupConfig, members: &[String], test_ur
 }
 
 // ── Smart Groups (region-based) ────────────────────────────────────────────
-
-// Reuse the Structured-labeled version from convert.rs
-struct RegionGroup {
-    display: String,
-    proxy_names: Vec<String>,
-    code: String,
-}
-
-fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
-    let mut regions: HashMap<String, Vec<String>> = HashMap::new();
-    let mut region_emoji: HashMap<String, String> = HashMap::new();
-
-    for ep in proxies {
-        let code = if ep.country_code.is_empty() { "Unknown" } else { &ep.country_code };
-        regions.entry(code.to_string()).or_default().push(ep.node.name().to_string());
-        if region_emoji.get(code).is_none() && !ep.emoji.is_empty() {
-            region_emoji.insert(code.to_string(), ep.emoji.clone());
-        }
-    }
-
-    let mut result: Vec<RegionGroup> = regions
-        .into_iter()
-        .map(|(code, names)| {
-            let emoji = region_emoji.get(&code).cloned().unwrap_or_default();
-            let chinese_name = geoip::country_code_to_chinese(&code);
-            let display = if emoji.is_empty() {
-                format!("{} {}", chinese_name, code)
-            } else {
-                format!("{}{} {}", emoji, chinese_name, code)
-            };
-            RegionGroup { display, proxy_names: names, code }
-        })
-        .collect();
-
-    let priority: HashMap<&str, usize> = SmartGroupConfig::regions()
-        .iter()
-        .enumerate()
-        .map(|(i, &r)| (r, i))
-        .collect();
-
-    result.sort_by(|a, b| {
-        let pa = priority.get(a.code.as_str()).copied().unwrap_or(usize::MAX);
-        let pb = priority.get(b.code.as_str()).copied().unwrap_or(usize::MAX);
-        pa.cmp(&pb)
-    });
-
-    result
-}
+// RegionGroup + group_by_region + build_auto_group + build_select_group
+// are shared from convert via `use crate::convert::*;`
 
 fn build_smart_groups(
     smart: &SmartGroupConfig,
@@ -328,9 +280,9 @@ fn build_smart_groups(
     for region in &regions {
         let auto_name = format!("{} Auto", region.display);
         region_group_names.push(auto_name.clone());
-        groups.push(build_auto_group_clone(&auto_name, &region.proxy_names, auto_type, test_url));
+        groups.push(build_auto_group(&auto_name, &region.proxy_names, auto_type, test_url));
         let select_name = region.display.clone();
-        groups.push(build_select_group_clone(&select_name, &region.proxy_names));
+        groups.push(build_select_group(&select_name, &region.proxy_names));
     }
 
     let all_yaml_names: Vec<Value> = enriched
@@ -354,7 +306,7 @@ fn build_smart_groups(
     // Fallback group
     if smart.fallback_group {
         let fb_name = "故障转移 Fallback";
-        groups.push(build_auto_group_clone(fb_name, &all_plain_names, "fallback", test_url));
+        groups.push(build_auto_group(fb_name, &all_plain_names, "fallback", test_url));
         region_group_names.push(fb_name.into());
     }
 
@@ -365,35 +317,6 @@ fn build_smart_groups(
         .chain(region_group_names.iter().cloned())
         .collect();
     group_names_out.extend(main_members);
-}
-
-fn build_auto_group_clone(name: &str, proxies: &[String], group_type: &str, test_url: &str) -> Value {
-    let mut map = serde_yaml::Mapping::new();
-    map.insert("name".into(), name.into());
-    map.insert("type".into(), group_type.into());
-
-    let proxy_list: Vec<Value> = proxies.iter().map(|n| Value::String(n.clone())).collect();
-    map.insert("proxies".into(), Value::Sequence(proxy_list));
-
-    if group_type == "url-test" {
-        map.insert("url".into(), test_url.into());
-        map.insert("interval".into(), "300".into());
-        map.insert("tolerance".into(), "50".into());
-    } else if group_type == "fallback" {
-        map.insert("url".into(), test_url.into());
-        map.insert("interval".into(), "300".into());
-    }
-
-    Value::Mapping(map)
-}
-
-fn build_select_group_clone(name: &str, proxies: &[String]) -> Value {
-    let mut map = serde_yaml::Mapping::new();
-    map.insert("name".into(), name.into());
-    map.insert("type".into(), "select".into());
-    let proxy_list: Vec<Value> = proxies.iter().map(|n| Value::String(n.clone())).collect();
-    map.insert("proxies".into(), Value::Sequence(proxy_list));
-    Value::Mapping(map)
 }
 
 #[cfg(test)]

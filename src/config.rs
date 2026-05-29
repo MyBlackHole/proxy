@@ -170,11 +170,72 @@ pub struct CrawlConfig {
     pub rss: RssCrawlConfig,
 
     /// Known proxy aggregation sites
-    #[serde(default)]
+    #[serde(default = "default_proxy_sites")]
     pub proxy_sites: Vec<ProxySiteConfig>,
 
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
+}
+
+fn default_proxy_sites() -> Vec<ProxySiteConfig> {
+    vec![
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://raw.githubusercontent.com/TheSpeedX/SOCKS-Proxy-List/master/socks5.txt".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://raw.githubusercontent.com/free-proxy-list/free-proxy-list/main/free-proxy-list.txt".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies.txt".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://proxifly-free-proxy-list.p.rapidapi.com/api/v1/proxies?protocol=http&protocol=socks5".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+        ProxySiteConfig {
+            enable: true,
+            url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all".into()),
+            include: String::new(),
+            exclude: String::new(),
+            push_to: Vec::new(),
+        },
+    ]
 }
 
 fn default_threshold() -> usize { 5 }
@@ -206,7 +267,7 @@ pub struct DiscordCrawlConfig {
     pub push_to: Vec<String>,
 }
 
-fn default_discord_limit() -> usize { 50 }
+fn default_discord_limit() -> usize { 100 }
 
 // ── New Source: RSS/Atom ───────────────────────────────────────────────────
 
@@ -227,7 +288,7 @@ pub struct RssCrawlConfig {
     pub push_to: Vec<String>,
 }
 
-fn default_rss_limit() -> usize { 50 }
+fn default_rss_limit() -> usize { 100 }
 
 // ── New Source: Proxy Aggregation Sites ────────────────────────────────────
 
@@ -281,11 +342,11 @@ pub struct TelegramCrawlConfig {
     pub pages: usize,
 
     /// Enable searching Telegram by keyword across public groups
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub search_enable: bool,
 
     /// Keyword to search for in public Telegram groups
-    #[serde(default)]
+    #[serde(default = "default_telegram_search_query")]
     pub search_query: String,
 
     /// Number of search result pages to crawl
@@ -296,16 +357,22 @@ pub struct TelegramCrawlConfig {
     pub exclude: String,
 
     /// Enable crawling media group/channel history
-    #[serde(default)]
+    #[serde(default = "default_telegram_history_depth")]
     pub history_depth: usize,
 
     #[serde(default)]
     pub users: HashMap<String, TelegramUserConfig>,
 }
 
-fn default_telegram_search_pages() -> usize { 3 }
+fn default_telegram_search_query() -> String {
+    "免费节点 订阅 ss:// trojan:// vmess://".to_string()
+}
 
-fn default_telegram_pages() -> usize { 5 }
+fn default_telegram_history_depth() -> usize { 3 }
+
+fn default_telegram_search_pages() -> usize { 5 }
+
+fn default_telegram_pages() -> usize { 10 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TelegramUserConfig {
@@ -329,11 +396,11 @@ pub struct TwitterCrawlConfig {
     pub enable: bool,
 
     /// Search Twitter by keyword globally for proxy content
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub search_enable: bool,
 
     /// Keyword to search for on Twitter
-    #[serde(default)]
+    #[serde(default = "default_twitter_search_query")]
     pub search_query: String,
 
     /// Number of tweets to fetch in search results
@@ -344,13 +411,17 @@ pub struct TwitterCrawlConfig {
     pub users: HashMap<String, TwitterUserConfig>,
 }
 
-fn default_twitter_search_count() -> usize { 30 }
+fn default_twitter_search_query() -> String {
+    "free proxy v2ray subscription ss://".to_string()
+}
 
-fn default_google_limits() -> usize { 100 }
+fn default_twitter_search_count() -> usize { 50 }
+
+fn default_google_limits() -> usize { 200 }
 fn default_yandex_within() -> usize { 3 }
-fn default_yandex_pages() -> usize { 5 }
-fn default_github_pages() -> usize { 2 }
-fn default_github_commits() -> usize { 3 }
+fn default_yandex_pages() -> usize { 10 }
+fn default_github_pages() -> usize { 5 }
+fn default_github_commits() -> usize { 5 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TwitterUserConfig {
@@ -373,7 +444,7 @@ pub struct TwitterUserConfig {
     pub push_to: Vec<String>,
 }
 
-fn default_twitter_num() -> usize { 30 }
+fn default_twitter_num() -> usize { 50 }
 
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -384,8 +455,8 @@ pub struct YandexCrawlConfig {
     #[serde(default)]
     pub exclude: String,
 
-    /// Independent search query (if empty, falls back to github.search_topic for backwards compat)
-    #[serde(default)]
+    /// Independent search query (if empty, falls back to github.search_topic)
+    #[serde(default = "default_yandex_query")]
     pub query: String,
 
     #[serde(default = "default_yandex_within")]
@@ -399,6 +470,10 @@ pub struct YandexCrawlConfig {
 
     #[serde(default)]
     pub push_to: Vec<String>,
+}
+
+fn default_yandex_query() -> String {
+    "v2ray clash subscribe token subscription".to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -456,8 +531,8 @@ pub struct GoogleCrawlConfig {
     #[serde(default = "default_google_limits")]
     pub limits: usize,
 
-    /// Independent search query (if empty, falls back to github.search_topic for backwards compat)
-    #[serde(default)]
+    /// Independent search query (if empty, falls back to github.search_topic)
+    #[serde(default = "default_google_query")]
     pub query: String,
 
     #[serde(default)]
@@ -465,6 +540,10 @@ pub struct GoogleCrawlConfig {
 
     #[serde(default)]
     pub push_to: Vec<String>,
+}
+
+fn default_google_query() -> String {
+    "v2ray subscribe clash token subscription free".to_string()
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -508,26 +587,28 @@ pub struct GithubCrawlConfig {
     #[serde(default)]
     pub spams: Vec<String>,
 
-    #[serde(default)]
+    /// Default search query for GitHub code search
+    #[serde(default = "default_github_search_topic")]
     pub search_topic: String,
 
-    #[serde(default)]
+    /// GitHub code search query
+    #[serde(default = "default_github_query")]
     pub query: String,
 
     /// Search GitHub Gists for proxy content
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub search_gists: bool,
 
     /// Search GitHub Topics matching these keywords
-    #[serde(default)]
+    #[serde(default = "default_github_search_topics")]
     pub search_topics: Vec<String>,
 
     /// Search repository README files for proxy links
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub search_readme: bool,
 
     /// Search file contents in repositories for proxy links
-    #[serde(default)]
+    #[serde(default = "default_true")]
     pub search_files: bool,
 
     #[serde(default)]
@@ -535,6 +616,27 @@ pub struct GithubCrawlConfig {
 
     #[serde(default)]
     pub search_repos: Vec<String>,
+}
+
+fn default_github_search_topic() -> String {
+    "free-proxy".to_string()
+}
+
+fn default_github_query() -> String {
+    "subscribe?token=".to_string()
+}
+
+fn default_github_search_topics() -> Vec<String> {
+    vec![
+        "free-proxy".into(),
+        "v2ray".into(),
+        "clash".into(),
+        "proxy-list".into(),
+        "shadowsocks".into(),
+        "trojan".into(),
+        "proxies".into(),
+        "vpn".into(),
+    ]
 }
 
 
