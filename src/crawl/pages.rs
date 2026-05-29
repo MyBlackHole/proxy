@@ -5,6 +5,32 @@ use tokio::sync::Semaphore;
 use super::extract_subscribes;
 use crate::config::PageCrawlConfig;
 
+fn extract_page_links(content: &str) -> Vec<String> {
+    let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    let mut seen = std::collections::HashSet::new();
+    let mut links = Vec::new();
+    for m in link_re.find_iter(content) {
+        let link = m.as_str().trim().to_string();
+        if !link.starts_with("http://") && !link.starts_with("https://") {
+            continue;
+        }
+        if link.contains("subscribe") || link.contains("token=") || link.contains("vmess://") {
+            continue;
+        }
+        if !seen.insert(link.clone()) {
+            continue;
+        }
+        if seen.len() > 20 {
+            break;
+        }
+        links.push(link);
+    }
+    links
+}
+
 pub async fn crawl_pages(
     client: &reqwest::Client,
     urls: Vec<String>,
@@ -106,8 +132,6 @@ async fn crawl_pages_concurrent(
     Ok(results)
 }
 
-/// Recursively follow http/https links found in page content up to remaining depth.
-/// Fetches links at each depth level concurrently using a bounded Semaphore.
 fn crawl_page_depth<'a>(client: &'a reqwest::Client, content: &'a str, remaining: usize) -> std::pin::Pin<Box<dyn std::future::Future<Output = Vec<String>> + Send + 'a>> {
     let content = content.to_string();
     let client = client.clone();
@@ -116,34 +140,7 @@ fn crawl_page_depth<'a>(client: &'a reqwest::Client, content: &'a str, remaining
             return Vec::new();
         }
 
-        let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!("[crawl_page_depth] failed to compile link regex: {}", e);
-                return Vec::new();
-            }
-        };
-
-        // Collect all links first (owned, with dedup and cap at 20)
-        let mut seen = std::collections::HashSet::new();
-        let mut links = Vec::new();
-        for m in link_re.find_iter(&content) {
-            let link = m.as_str().trim().to_string();
-            if !link.starts_with("http://") && !link.starts_with("https://") {
-                continue;
-            }
-            if link.contains("subscribe") || link.contains("token=") || link.contains("vmess://") {
-                continue;
-            }
-            if !seen.insert(link.clone()) {
-                continue;
-            }
-            if seen.len() > 20 {
-                break;
-            }
-            links.push(link);
-        }
-
+        let links = extract_page_links(&content);
         if links.is_empty() {
             return Vec::new();
         }
@@ -163,8 +160,6 @@ fn crawl_page_depth<'a>(client: &'a reqwest::Client, content: &'a str, remaining
                 {
                     page_results.extend(extract_subscribes(&text));
                     if remaining > 1 {
-                        // Recurse using the same pattern (sequential at deeper levels)
-                        // to avoid unbounded spawning
                         page_results.extend(
                             crawl_page_depth_inner(&client, &text, remaining - 1).await
                         );
@@ -190,32 +185,10 @@ fn crawl_page_depth_inner<'a>(client: &'a reqwest::Client, content: &'a str, rem
             return Vec::new();
         }
 
-        let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
-            Ok(r) => r,
-            Err(e) => {
-                log::warn!("[crawl_page_depth] failed to compile link regex: {}", e);
-                return Vec::new();
-            }
-        };
-
+        let links = extract_page_links(content);
         let mut results = Vec::new();
-        let mut seen = std::collections::HashSet::new();
 
-        for m in link_re.find_iter(content) {
-            let link = m.as_str().trim().to_string();
-            if !link.starts_with("http://") && !link.starts_with("https://") {
-                continue;
-            }
-            if link.contains("subscribe") || link.contains("token=") || link.contains("vmess://") {
-                continue;
-            }
-            if !seen.insert(link.clone()) {
-                continue;
-            }
-            if seen.len() > 20 {
-                break;
-            }
-
+        for link in links {
             log::debug!("[crawl_page_depth] GET: {}", link);
             if let Ok(resp) = client.get(&link).send().await
                 && let Ok(text) = resp.text().await
