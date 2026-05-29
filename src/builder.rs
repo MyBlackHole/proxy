@@ -85,10 +85,7 @@ pub async fn build_clash_config(
     let proxy_entries: Vec<Value> = cfg
         .enriched
         .iter()
-        .filter_map(|ep| {
-            let m = ep.node.clash_mapping();
-            Some(Value::Mapping(m))
-        })
+        .map(|ep| Value::Mapping(ep.node.clash_mapping()))
         .collect();
     let all_names: Vec<String> = cfg.enriched.iter().map(|ep| ep.node.name().to_string()).collect();
 
@@ -336,18 +333,18 @@ fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::M
 /// Parse subconverter-style `!!` directive prefixes from a proxy entry string.
 /// Returns `(directive_name, pattern)` on success.
 fn parse_directive(entry: &str) -> Option<(&str, &str)> {
-    if entry.starts_with("!!TYPE=") {
-        Some(("TYPE", &entry[7..]))
-    } else if entry.starts_with("!!PORT=") {
-        Some(("PORT", &entry[7..]))
-    } else if entry.starts_with("!!SERVER=") {
-        Some(("SERVER", &entry[9..]))
-    } else if entry.starts_with("!!GROUP=") {
-        Some(("GROUP", &entry[8..]))
-    } else if entry.starts_with("!!GROUPID=") {
-        Some(("GROUPID", &entry[10..]))
-    } else if entry.starts_with("!!INSERT=") {
-        Some(("GROUPID", &entry[8..]))
+    if let Some(v) = entry.strip_prefix("!!TYPE=") {
+        Some(("TYPE", v))
+    } else if let Some(v) = entry.strip_prefix("!!PORT=") {
+        Some(("PORT", v))
+    } else if let Some(v) = entry.strip_prefix("!!SERVER=") {
+        Some(("SERVER", v))
+    } else if let Some(v) = entry.strip_prefix("!!GROUP=") {
+        Some(("GROUP", v))
+    } else if let Some(v) = entry.strip_prefix("!!GROUPID=") {
+        Some(("GROUPID", v))
+    } else if let Some(v) = entry.strip_prefix("!!INSERT=") {
+        Some(("GROUPID", v))
     } else {
         None
     }
@@ -730,6 +727,7 @@ mod tests {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn test_enriched(name: &str, server: &str, port: u16, uuid: &str, latency: u64, cc: &str, cn: &str, emoji: &str) -> EnrichedProxy {
         let mut ep = EnrichedProxy::new(test_vmess(name, server, port, uuid), latency);
         ep.country_code = cc.into();
