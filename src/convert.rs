@@ -80,7 +80,7 @@ pub(crate) fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
     for ep in proxies {
         let code = if ep.country_code.is_empty() { "Unknown" } else { &ep.country_code };
         regions.entry(code.to_string()).or_default().push(ep.node.name().to_string());
-        if region_emoji.get(code).is_none() && !ep.emoji.is_empty() {
+        if !region_emoji.contains_key(code) && !ep.emoji.is_empty() {
             region_emoji.insert(code.to_string(), ep.emoji.clone());
         }
     }
@@ -373,7 +373,7 @@ pub fn convert_enriched_to_clash(
     proxies: &[EnrichedProxy],
     smart_cfg: Option<&SmartGroupConfig>,
 ) -> Result<String> {
-    let entries: Vec<serde_yaml::Value> = proxies.iter().map(|ep| build_clash_entry(&ep.node)).flatten().collect();
+    let entries: Vec<serde_yaml::Value> = proxies.iter().filter_map(|ep| build_clash_entry(&ep.node)).collect();
     let all_names: Vec<String> = proxies.iter().map(|ep| ep.node.name().to_string()).collect();
     let all_yaml_names: Vec<serde_yaml::Value> = all_names.iter().map(|n| serde_yaml::Value::String(n.clone())).collect();
 
@@ -492,6 +492,7 @@ mod tests {
         })
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn test_enriched(name: &str, server: &str, port: u16, uuid: &str, latency: u64, cc: &str, cn: &str, emoji: &str) -> EnrichedProxy {
         let country = cc.to_string();
         let mut ep = EnrichedProxy::new(
@@ -539,22 +540,22 @@ mod tests {
 
         let mapping = parse_clash_yaml(&convert_proxies_to_clash(&[node]).unwrap());
 
-        assert!(mapping.contains_key(&ck("proxies")));
-        assert!(mapping.contains_key(&ck("proxy-groups")));
-        assert!(mapping.contains_key(&ck("rules")));
+        assert!(mapping.contains_key(ck("proxies")));
+        assert!(mapping.contains_key(ck("proxy-groups")));
+        assert!(mapping.contains_key(ck("rules")));
 
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(ck("proxies")).unwrap().as_sequence().unwrap();
         assert_eq!(proxies.len(), 1);
         let proxy = proxies[0].as_mapping().unwrap();
-        assert_eq!(proxy.get(&ck("name")).unwrap().as_str().unwrap(), "test-node");
+        assert_eq!(proxy.get(ck("name")).unwrap().as_str().unwrap(), "test-node");
 
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(ck("proxy-groups")).unwrap().as_sequence().unwrap();
         assert_eq!(groups.len(), 1);
         let group = groups[0].as_mapping().unwrap();
-        assert_eq!(group.get(&ck("name")).unwrap().as_str().unwrap(), "Proxy");
-        assert_eq!(group.get(&ck("type")).unwrap().as_str().unwrap(), "select");
+        assert_eq!(group.get(ck("name")).unwrap().as_str().unwrap(), "Proxy");
+        assert_eq!(group.get(ck("type")).unwrap().as_str().unwrap(), "select");
 
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(ck("rules")).unwrap().as_sequence().unwrap();
         assert_eq!(rules.len(), 1);
         assert_eq!(rules[0].as_str().unwrap(), "MATCH,Proxy");
     }
@@ -582,20 +583,20 @@ mod tests {
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep1, ep2], Some(&smart)).unwrap());
 
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(ck("proxy-groups")).unwrap().as_sequence().unwrap();
         // Groups: JP Auto, JP select, SG Auto, SG select, LB, Fallback, Proxy = 7
         assert!(groups.len() >= 6, "expected at least 6 groups, got {}", groups.len());
 
         let group_names: Vec<&str> = groups
             .iter()
-            .filter_map(|g| g.as_mapping()?.get(&ck("name"))?.as_str())
+            .filter_map(|g| g.as_mapping()?.get(ck("name"))?.as_str())
             .collect();
         assert!(group_names.iter().any(|n| n.contains("日本")));
         assert!(group_names.iter().any(|n| n.contains("新加坡")));
         assert!(group_names.iter().any(|n| n.contains("Auto")));
         assert!(group_names.iter().any(|n| n.contains("Fallback")));
 
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(ck("rules")).unwrap().as_sequence().unwrap();
         let rule_strs: Vec<&str> = rules.iter().filter_map(|r| r.as_str()).collect();
         assert!(rule_strs.iter().any(|r| r.contains("chatgpt")));
         assert!(rule_strs.iter().any(|r| r.contains("GEOIP,CN,DIRECT")));
@@ -626,7 +627,7 @@ mod tests {
     fn test_legacy_empty_input() {
         let yaml = convert_proxies_to_clash(&[]).unwrap();
         let mapping = parse_clash_yaml(&yaml);
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(ck("proxies")).unwrap().as_sequence().unwrap();
         assert!(proxies.is_empty());
     }
 
@@ -650,10 +651,10 @@ mod tests {
         let yaml = convert_enriched_to_clash(&[], Some(&smart)).unwrap();
         let mapping = parse_clash_yaml(&yaml);
         // Should still produce valid YAML with empty proxies
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(ck("proxies")).unwrap().as_sequence().unwrap();
         assert!(proxies.is_empty());
         // Groups should still be generated (at least Proxy)
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(ck("proxy-groups")).unwrap().as_sequence().unwrap();
         assert!(!groups.is_empty());
     }
 
@@ -663,27 +664,27 @@ mod tests {
     fn test_default_clash_header_contains_expected_keys() {
         let header = default_clash_header();
         // Core fields (subconverter standard: simple_base.yml / all_base.tpl)
-        assert!(header.contains_key(&ck("port")));
-        assert!(header.contains_key(&ck("socks-port")));
-        assert!(header.contains_key(&ck("allow-lan")));
-        assert!(header.contains_key(&ck("mode")));
-        assert!(header.contains_key(&ck("log-level")));
-        assert!(header.contains_key(&ck("external-controller")));
+        assert!(header.contains_key(ck("port")));
+        assert!(header.contains_key(ck("socks-port")));
+        assert!(header.contains_key(ck("allow-lan")));
+        assert!(header.contains_key(ck("mode")));
+        assert!(header.contains_key(ck("log-level")));
+        assert!(header.contains_key(ck("external-controller")));
         // Subconverter does not include Meta-specific fields in the base header
-        assert!(!header.contains_key(&ck("mixed-port")));
-        assert!(!header.contains_key(&ck("ipv6")));
-        assert!(!header.contains_key(&ck("unified-delay")));
-        assert!(!header.contains_key(&ck("tcp-concurrent")));
-        assert!(!header.contains_key(&ck("connectivity-check")));
-        assert!(!header.contains_key(&ck("global-client-fingerprint")));
-        assert!(!header.contains_key(&ck("find-process-mode")));
-        assert!(!header.contains_key(&ck("geo-auto-update")));
+        assert!(!header.contains_key(ck("mixed-port")));
+        assert!(!header.contains_key(ck("ipv6")));
+        assert!(!header.contains_key(ck("unified-delay")));
+        assert!(!header.contains_key(ck("tcp-concurrent")));
+        assert!(!header.contains_key(ck("connectivity-check")));
+        assert!(!header.contains_key(ck("global-client-fingerprint")));
+        assert!(!header.contains_key(ck("find-process-mode")));
+        assert!(!header.contains_key(ck("geo-auto-update")));
         // Values
-        assert_eq!(header.get(&ck("port")).unwrap().as_i64().unwrap(), 7890);
-        assert_eq!(header.get(&ck("socks-port")).unwrap().as_i64().unwrap(), 7891);
-        assert_eq!(header.get(&ck("allow-lan")).unwrap().as_bool().unwrap(), true);
-        assert_eq!(header.get(&ck("mode")).unwrap().as_str().unwrap(), "rule");
-        assert_eq!(header.get(&ck("log-level")).unwrap().as_str().unwrap(), "info");
+        assert_eq!(header.get(ck("port")).unwrap().as_i64().unwrap(), 7890);
+        assert_eq!(header.get(ck("socks-port")).unwrap().as_i64().unwrap(), 7891);
+        assert!(header.get(ck("allow-lan")).unwrap().as_bool().unwrap());
+        assert_eq!(header.get(ck("mode")).unwrap().as_str().unwrap(), "rule");
+        assert_eq!(header.get(ck("log-level")).unwrap().as_str().unwrap(), "info");
     }
 
     // ── Round-trip: all proxy types through legacy conversion ─────────────────
@@ -816,16 +817,16 @@ mod tests {
         ];
 
         let mapping = parse_clash_yaml(&convert_proxies_to_clash(&nodes).unwrap());
-        let proxies = mapping.get(&ck("proxies")).unwrap().as_sequence().unwrap();
+        let proxies = mapping.get(ck("proxies")).unwrap().as_sequence().unwrap();
         assert_eq!(proxies.len(), 11, "all 11 proxy types should be present");
 
         // Every proxy must have name, server, port, type
         for proxy in proxies {
             let m = proxy.as_mapping().expect("each proxy must be a mapping");
-            assert!(m.contains_key(&ck("name")), "missing name");
-            assert!(m.contains_key(&ck("server")), "missing server");
-            assert!(m.contains_key(&ck("port")), "missing port");
-            assert!(m.contains_key(&ck("type")), "missing type");
+            assert!(m.contains_key(ck("name")), "missing name");
+            assert!(m.contains_key(ck("server")), "missing server");
+            assert!(m.contains_key(ck("port")), "missing port");
+            assert!(m.contains_key(ck("type")), "missing type");
         }
 
         // Verify protocol-specific output for a few key types
@@ -833,35 +834,35 @@ mod tests {
             .iter()
             .filter_map(|p| {
                 let m = p.as_mapping()?;
-                Some((m.get(&ck("name"))?.as_str()?, m))
+                Some((m.get(ck("name"))?.as_str()?, m))
             })
             .collect();
 
         // SS: cipher field
         let ss = proxy_map.get("ss-test").unwrap();
-        assert_eq!(ss.get(&ck("cipher")).unwrap().as_str().unwrap(), "chacha20-ietf-poly1305");
-        assert_eq!(ss.get(&ck("type")).unwrap().as_str().unwrap(), "ss");
+        assert_eq!(ss.get(ck("cipher")).unwrap().as_str().unwrap(), "chacha20-ietf-poly1305");
+        assert_eq!(ss.get(ck("type")).unwrap().as_str().unwrap(), "ss");
 
         // Trojan: alpn as list, udp as bool
         let trojan = proxy_map.get("trojan-test").unwrap();
-        assert_eq!(trojan.get(&ck("type")).unwrap().as_str().unwrap(), "trojan");
-        let alpn = trojan.get(&ck("alpn")).unwrap().as_sequence().unwrap();
+        assert_eq!(trojan.get(ck("type")).unwrap().as_str().unwrap(), "trojan");
+        let alpn = trojan.get(ck("alpn")).unwrap().as_sequence().unwrap();
         assert_eq!(alpn.len(), 2);
 
         // Hysteria2: obfs fields
         let hy2 = proxy_map.get("hy2-test").unwrap();
-        assert_eq!(hy2.get(&ck("obfs")).unwrap().as_str().unwrap(), "salamander");
-        assert!(hy2.contains_key(&ck("obfs-password")));
+        assert_eq!(hy2.get(ck("obfs")).unwrap().as_str().unwrap(), "salamander");
+        assert!(hy2.contains_key(ck("obfs-password")));
 
         // Snell: version (u8 as number)
         let snell = proxy_map.get("snell-test").unwrap();
-        assert!(snell.contains_key(&ck("obfs")));
+        assert!(snell.contains_key(ck("obfs")));
         // version may or may not be serialized
 
         // TUIC: udp-relay-mode and congestion-controller
         let tuic = proxy_map.get("tuic-test").unwrap();
         // Check that TUIC-specific fields make it through (they may use different key names)
-        assert!(tuic.contains_key(&ck("token")));
+        assert!(tuic.contains_key(ck("token")));
     }
 
     // ── Smart conversion with minimal config ──────────────────────────────────
@@ -887,12 +888,12 @@ mod tests {
         };
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep], Some(&smart)).unwrap());
-        let groups = mapping.get(&ck("proxy-groups")).unwrap().as_sequence().unwrap();
+        let groups = mapping.get(ck("proxy-groups")).unwrap().as_sequence().unwrap();
         // Always at minimum: region auto group, region select group, Proxy group
         assert!(groups.len() >= 3, "expected at least 3 groups, got {}", groups.len());
         let group_names: Vec<&str> = groups
             .iter()
-            .filter_map(|g| g.as_mapping()?.get(&ck("name"))?.as_str())
+            .filter_map(|g| g.as_mapping()?.get(ck("name"))?.as_str())
             .collect();
         assert!(group_names.contains(&"Proxy"), "default Proxy group should exist");
         // With fallback_group + load_balance_group off, no fallback/lb group expected
@@ -923,7 +924,7 @@ mod tests {
         };
 
         let mapping = parse_clash_yaml(&convert_enriched_to_clash(&[ep], Some(&smart)).unwrap());
-        let rules = mapping.get(&ck("rules")).unwrap().as_sequence().unwrap();
+        let rules = mapping.get(ck("rules")).unwrap().as_sequence().unwrap();
         let rule_strs: Vec<&str> = rules.iter().filter_map(|r| r.as_str()).collect();
         assert!(rule_strs.iter().any(|r| r.contains("custom.example.com")),
             "custom rules should appear in output: {:?}", rule_strs);
