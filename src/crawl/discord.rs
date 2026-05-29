@@ -94,40 +94,21 @@ pub async fn crawl_discord(
                     }
                 }
 
-                // Concurrent attachment fetching per message
+                // Fetch attachment content sequentially (attachments are rare, 0-3 per message)
                 if let Some(attachments) = msg.get("attachments").and_then(|v| v.as_array())
                     && !attachments.is_empty()
                 {
-                    let attach_sem = Arc::new(Semaphore::new(10));
-                    let mut att_handles = Vec::with_capacity(attachments.len());
                     for attachment in attachments {
-                        let permit = match attach_sem.clone().acquire_owned().await {
-                            Ok(p) => p,
-                            Err(_) => break,
-                        };
-                        let client = client.clone();
-                        if let Some(url_str) = attachment.get("url").and_then(|v| v.as_str()) {
-                            if url_str.ends_with(".txt") || url_str.ends_with(".yaml")
-                                || url_str.ends_with(".yml") || url_str.ends_with(".conf")
+                        if let Some(url_str) = attachment.get("url").and_then(|v| v.as_str())
+                            && (url_str.ends_with(".txt") || url_str.ends_with(".yaml")
+                                || url_str.ends_with(".yml") || url_str.ends_with(".conf"))
+                        {
+                            log::debug!("[discord] GET attachment: {}", url_str);
+                            if let Ok(resp) = client.get(url_str).send().await
+                                && let Ok(text) = resp.text().await
                             {
-                                let url = url_str.to_string();
-                                att_handles.push(tokio::spawn(async move {
-                                    let _p = permit;
-                                    log::debug!("[discord] GET attachment: {}", url);
-                                    if let Ok(resp) = client.get(&url).send().await
-                                        && let Ok(text) = resp.text().await
-                                    {
-                                        extract_subscribes(&text)
-                                    } else {
-                                        Vec::new()
-                                    }
-                                }));
+                                channel_results.extend(extract_subscribes(&text));
                             }
-                        }
-                    }
-                    for h in att_handles {
-                        if let Ok(urls) = h.await {
-                            channel_results.extend(urls);
                         }
                     }
                 }
