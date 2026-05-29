@@ -328,10 +328,9 @@ impl VMessConfig {
         m.insert("port".into(), Value::Number(Number::from(self.port)));
         m.insert("type".into(), "vmess".into());
         m.insert("uuid".into(), self.uuid.as_str().into());
-        if let Some(ref v) = self.alter_id {
-            if let Ok(n) = v.parse::<u64>() {
+        if let Some(ref v) = self.alter_id
+            && let Ok(n) = v.parse::<u64>() {
                 m.insert("alterId".into(), Value::Number(Number::from(n)));
-            }
         }
         m.insert("cipher".into(), self.cipher.as_deref().unwrap_or("auto").into());
         if let Some(v) = self.tls { m.insert("tls".into(), v.into()); }

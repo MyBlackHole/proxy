@@ -370,13 +370,12 @@ pub async fn crawl_github_gists(
                     for gist in &gists {
                         if let Some(files) = gist.get("files").and_then(|v| v.as_object()) {
                             for (_name, file) in files {
-                                if let Some(raw_url) = file.get("raw_url").and_then(|v| v.as_str()) {
-                                    if raw_url.contains(".yaml") || raw_url.contains(".yml")
+                                if let Some(raw_url) = file.get("raw_url").and_then(|v| v.as_str())
+                                    && (raw_url.contains(".yaml") || raw_url.contains(".yml")
                                         || raw_url.contains(".txt") || raw_url.contains(".conf")
-                                        || raw_url.contains("config") || raw_url.contains("proxy")
-                                    {
-                                        urls.push(raw_url.to_string());
-                                    }
+                                        || raw_url.contains("config") || raw_url.contains("proxy"))
+                                {
+                                    urls.push(raw_url.to_string());
                                 }
                             }
                         }

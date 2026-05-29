@@ -159,7 +159,7 @@ pub fn is_enabled() -> bool {
 }
 
 /// Build cache file path: cache_dir / Sha256(url)
-fn cache_path(dir: &PathBuf, url: &str) -> PathBuf {
+fn cache_path(dir: &std::path::Path, url: &str) -> PathBuf {
     let hash = hex::encode(Sha256::digest(url.as_bytes()));
     dir.join(hash)
 }

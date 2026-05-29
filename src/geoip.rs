@@ -58,7 +58,6 @@ pub async fn batch_geo_query(
             (ip.clone(), query_ip_location(&c, &ip).await)
         }));
     }
-    drop(sem);
 
     let mut map = HashMap::new();
     for handle in handles {

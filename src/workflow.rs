@@ -165,19 +165,18 @@ async fn process_crawled_proxies(
             let stripped: String = url.chars().filter(|c| !c.is_whitespace()).collect();
             if stripped.len() > 20
                 && stripped.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
+                && let Ok(decoded) = subscribe::decode_base64_subscription(&stripped)
             {
-                if let Ok(decoded) = subscribe::decode_base64_subscription(&stripped) {
-                    let format = subscribe::detect_format(decoded.as_bytes());
-                    let links = subscribe::extract_links(&decoded, format);
-                    if !links.is_empty() {
-                        log::info!("Base64 URL decoded into {} proxy links", links.len());
-                        for link in links {
-                            if let Ok(node) = parser::parse_proxy_url(&link) {
-                                crawled_proxies.push(node);
-                            }
+                let format = subscribe::detect_format(decoded.as_bytes());
+                let links = subscribe::extract_links(&decoded, format);
+                if !links.is_empty() {
+                    log::info!("Base64 URL decoded into {} proxy links", links.len());
+                    for link in links {
+                        if let Ok(node) = parser::parse_proxy_url(&link) {
+                            crawled_proxies.push(node);
                         }
-                        continue;
                     }
+                    continue;
                 }
             }
         }
