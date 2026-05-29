@@ -64,8 +64,8 @@ pub async fn crawl_telegram_history(
 
     if history_depth > 0 {
         let extra_pages = history_depth.min(50);
-        if let Ok(page_count) = get_telegram_page_count(client, channel).await {
-            if page_count > 0 {
+        if let Ok(page_count) = get_telegram_page_count(client, channel).await
+            && page_count > 0 {
                 let values: Vec<i64> = (0..=page_count)
                     .rev()
                     .step_by(100)
@@ -82,7 +82,6 @@ pub async fn crawl_telegram_history(
                     }
                 }
             }
-        }
     }
 
     results.sort();

@@ -4,21 +4,63 @@ domain = ""
 sub = ["https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub"]
 push_to = ["free"]
 enable = true
-ignorede = true
-liveness = true
-rate = 2.5
-count = 2
 
 [crawl]
+enable = true
+
+# ── GitHub ──────────────────────────────────────────────────────────
+[crawl.github]
+enable = true
+# Set PUSH_TOKEN env var for higher API rate limits (optional)
+
+# ── Telegram ────────────────────────────────────────────────────────
+[crawl.telegram]
+enable = true
+search_enable = true
+search_query = "免费节点 订阅 ss:// trojan:// vmess://"
+search_pages = 3
+pages = 5
+
+[crawl.telegram.users]
+proxyshareCN = { push_to = ["free"] }
+yxjp = { push_to = ["free"] }
+wodeziyuan = { push_to = ["free"] }
+shiyong_jiedian = { push_to = ["free"] }
+
+# ── Google ──────────────────────────────────────────────────────────
+[crawl.google]
+enable = true
+limits = 100
+query = "v2ray subscribe clash token subscription free"
+
+# ── Yandex ──────────────────────────────────────────────────────────
+[crawl.yandex]
+enable = true
+pages = 5
+query = "v2ray clash subscribe token subscription"
+
+# ── Twitter ─────────────────────────────────────────────────────────
+[crawl.twitter]
+enable = true
+search_enable = true
+search_query = "free proxy v2ray subscription ss://"
+search_count = 30
+
+# ── Discord (disabled — needs bot token) ────────────────────────────
+[crawl.discord]
 enable = false
 
+# ── RSS ─────────────────────────────────────────────────────────────
+[crawl.rss]
+enable = false
+
+# ── Group Config ────────────────────────────────────────────────────
 [groups.free]
 emoji = true
 list = true
 
 [groups.free.targets]
 clash = "free-clash"
-v2ray = "free-v2ray"
 
 [groups.free.regularize]
 enable = true
@@ -48,8 +90,4 @@ engine = "local"
 
 [storage.items.free-clash]
 fileid = "clash.yaml"
-folderid = "output"
-
-[storage.items.free-v2ray]
-fileid = "v2ray.txt"
 folderid = "output"

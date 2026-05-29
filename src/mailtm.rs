@@ -298,7 +298,10 @@ impl TempMail {
                     let address_encoded = account.email.replace("@", "(a)").replace(".", "-_-");
                     let content_url = format!("{}/win/{}/{}", state.api_address, address_encoded, mail_id);
                     if let Ok(r) = client.get(&content_url).send().await {
-                        let body = r.text().await.unwrap_or_default();
+                        let body = r.text().await.unwrap_or_else(|e| {
+                            log::warn!("Failed to read mail.tm message body {}: {}", content_url, e);
+                            String::new()
+                        });
                         messages.push(TempMessage {
                             from: sender.to_string(),
                             subject: subject.to_string(),
@@ -350,7 +353,10 @@ impl TempMail {
                     let subject = email.get("subject").and_then(|v| v.as_str()).unwrap_or("");
                     let content_url = format!("{}/mailbox/{}/{}", state.api_address, username, mail_id);
                     if let Ok(r) = client.get(&content_url).send().await {
-                        let body = r.text().await.unwrap_or_default();
+                        let body = r.text().await.unwrap_or_else(|e| {
+                            log::warn!("Failed to read linshi message body {}: {}", content_url, e);
+                            String::new()
+                        });
                         messages.push(TempMessage {
                             from: from.to_string(),
                             subject: subject.to_string(),
@@ -368,12 +374,18 @@ impl TempMail {
         let start = std::time::Instant::now();
         let timeout = timeout_secs.min(600);
         let sleep_secs = 3u64;
-        let initial = self.get_messages(account).await.unwrap_or_default();
+        let initial = self.get_messages(account).await.unwrap_or_else(|e| {
+            log::warn!("Failed to get initial messages for {}: {}", account.email, e);
+            Vec::new()
+        });
         let mut last_count = initial.len();
 
         while start.elapsed().as_secs() < timeout {
             tokio::time::sleep(Duration::from_secs(sleep_secs)).await;
-            let messages = self.get_messages(account).await.unwrap_or_default();
+            let messages = self.get_messages(account).await.unwrap_or_else(|e| {
+                log::warn!("Failed to poll messages for {}: {}", account.email, e);
+                Vec::new()
+            });
             if messages.len() > last_count {
                 for msg in &messages {
                     if let Some(code) = extract_code(&msg.body) {

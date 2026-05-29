@@ -110,6 +110,18 @@ pub struct TicketConfig {
     pub level: usize,
 }
 
+impl Default for TicketConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            autoreset: false,
+            subject: String::new(),
+            message: String::new(),
+            level: 0,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ChatGptConfig {
     #[serde(default = "default_true")]
@@ -123,7 +135,7 @@ pub struct ChatGptConfig {
 }
 
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct CrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
@@ -175,6 +187,29 @@ pub struct CrawlConfig {
 
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
+}
+
+impl Default for CrawlConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            exclude: String::new(),
+            threshold: 5,
+            singlelink: true,
+            persist: CrawlPersistConfig::default(),
+            config: CrawlItemConfig::default(),
+            telegram: TelegramCrawlConfig::default(),
+            google: GoogleCrawlConfig::default(),
+            yandex: YandexCrawlConfig::default(),
+            github: GithubCrawlConfig::default(),
+            twitter: TwitterCrawlConfig::default(),
+            repositories: Vec::new(),
+            discord: DiscordCrawlConfig::default(),
+            rss: RssCrawlConfig::default(),
+            proxy_sites: default_proxy_sites(),
+            pages: Vec::new(),
+        }
+    }
 }
 
 fn default_proxy_sites() -> Vec<ProxySiteConfig> {
@@ -242,7 +277,7 @@ fn default_threshold() -> usize { 5 }
 
 // ── New Source: Discord ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct DiscordCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
@@ -267,11 +302,24 @@ pub struct DiscordCrawlConfig {
     pub push_to: Vec<String>,
 }
 
+impl Default for DiscordCrawlConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            bot_token: String::new(),
+            guild_id: String::new(),
+            channels: Vec::new(),
+            limit: 100,
+            push_to: Vec::new(),
+        }
+    }
+}
+
 fn default_discord_limit() -> usize { 100 }
 
 // ── New Source: RSS/Atom ───────────────────────────────────────────────────
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct RssCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
@@ -286,6 +334,17 @@ pub struct RssCrawlConfig {
 
     #[serde(default)]
     pub push_to: Vec<String>,
+}
+
+impl Default for RssCrawlConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            urls: Vec::new(),
+            limit: 100,
+            push_to: Vec::new(),
+        }
+    }
 }
 
 fn default_rss_limit() -> usize { 100 }
@@ -642,6 +701,7 @@ fn default_github_search_topics() -> Vec<String> {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct GroupConfig {
+    #[serde(default)]
     pub targets: HashMap<String, String>,
 
     #[serde(default)]
@@ -655,6 +715,12 @@ pub struct GroupConfig {
 
     #[serde(default)]
     pub smart: Option<SmartGroupConfig>,
+
+    // ── Node Preprocessing Pipeline ──
+
+    /// Pre-processing pipeline applied to proxies before output generation
+    #[serde(default)]
+    pub preprocess: Option<PreprocessConfig>,
 
     // ── Custom Proxy Groups (subconverter-style) ──
 
@@ -851,6 +917,16 @@ pub struct ProviderHealthCheck {
     pub interval: u64,
 }
 
+impl Default for ProviderHealthCheck {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            url: default_health_check_url(),
+            interval: 300,
+        }
+    }
+}
+
 fn default_health_check_url() -> String { "https://www.gstatic.com/generate_204".to_string() }
 fn default_health_check_interval() -> u64 { 300 }
 
@@ -986,7 +1062,7 @@ pub struct LocalStorageItem {
 }
 
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct SettingsConfig {
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
@@ -1011,12 +1087,131 @@ pub struct SettingsConfig {
 
     #[serde(default)]
     pub validate_binary: Option<String>,
+
+    /// Append Subscription-UserInfo comments to generated output (default: true)
+    #[serde(default = "default_true")]
+    pub append_userinfo: bool,
+
+    // ── Cache ──
+
+    /// Persistent cache configuration (TTL-based, file-backed)
+    #[serde(default)]
+    pub cache: CacheSettings,
 }
+
+impl Default for SettingsConfig {
+    fn default() -> Self {
+        Self {
+            concurrency: 64,
+            timeout: 30000,
+            socks_proxy: None,
+            retry: 3,
+            test_url: "https://www.gstatic.com/generate_204".to_string(),
+            overwrite: false,
+            invisible: false,
+            validate_binary: None,
+            append_userinfo: true,
+            cache: CacheSettings::default(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct CacheSettings {
+    /// Enable persistent caching (default: false)
+    #[serde(default)]
+    pub enabled: bool,
+
+    /// Cache directory path (default: "./cache")
+    #[serde(default = "default_cache_dir")]
+    pub dir: String,
+
+    /// Subscription cache TTL in seconds (default: 60)
+    #[serde(default = "default_subscription_ttl")]
+    pub subscription_ttl: u64,
+
+    /// Ruleset cache TTL in seconds (default: 21600 = 6h)
+    #[serde(default = "default_ruleset_ttl")]
+    pub ruleset_ttl: u64,
+
+    /// Serve stale cached data when fetch fails (default: true)
+    #[serde(default = "default_true")]
+    pub serve_stale: bool,
+}
+
+impl Default for CacheSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            dir: default_cache_dir(),
+            subscription_ttl: 60,
+            ruleset_ttl: 21600,
+            serve_stale: true,
+        }
+    }
+}
+
+fn default_cache_dir() -> String { "./cache".to_string() }
+fn default_subscription_ttl() -> u64 { 60 }
+fn default_ruleset_ttl() -> u64 { 21600 }
 
 fn default_concurrency() -> usize { 64 }
 fn default_timeout() -> u64 { 30000 }
 fn default_retry() -> usize { 3 }
 fn default_test_url() -> String { "https://www.gstatic.com/generate_204".to_string() }
+
+// ── Pre-processing Pipeline ───────────────────────────────────────────────
+
+/// Configuration for the proxy pre-processing pipeline.
+///
+/// Applied after GeoIP regularize but before Clash output generation, in this order:
+/// 1. include/exclude regex filter
+/// 2. deprecated encryption filter
+/// 3. regex rename rules
+/// 4. append_proxy_type prefix
+/// 5. sort
+#[derive(Debug, Clone, Default, Deserialize)]
+pub struct PreprocessConfig {
+    /// Regex rename rules — each rule replaces proxy name via `regex::Regex`
+    #[serde(default)]
+    pub rename: Vec<RenameRule>,
+
+    /// If true, prepend the protocol type (e.g. "SS-", "Trojan-") to proxy names
+    #[serde(default)]
+    pub append_proxy_type: bool,
+
+    /// Sort key: "name", "type", "latency" (default: no sort)
+    #[serde(default)]
+    pub sort_by: String,
+
+    /// Sort order: "asc" (default) or "desc"
+    #[serde(default = "default_sort_order")]
+    pub sort_order: String,
+
+    /// Filter out proxies using deprecated/weak encryption
+    #[serde(default)]
+    pub filter_deprecated: bool,
+
+    /// Keep only proxies whose name matches this regex
+    #[serde(default)]
+    pub include: String,
+
+    /// Exclude proxies whose name matches this regex (applied after include)
+    #[serde(default)]
+    pub exclude: String,
+}
+
+fn default_sort_order() -> String { "asc".to_string() }
+
+/// A single regex rename rule: `pattern` → `replacement`
+#[derive(Debug, Clone, Deserialize)]
+pub struct RenameRule {
+    /// Regex pattern to match against the proxy name
+    pub pattern: String,
+
+    /// Replacement string (supports `$1`, `$2`, etc. capture group references)
+    pub replace: String,
+}
 
 impl AppConfig {
     pub fn from_file(path: &str) -> crate::error::Result<Self> {

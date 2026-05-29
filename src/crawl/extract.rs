@@ -74,15 +74,12 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
     if let Ok(re) = Regex::new(r"(?:[A-Za-z0-9+/]{80,}={0,2})") {
         for m in re.find_iter(content) {
             let s = m.as_str().trim().to_string();
-            if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes()) {
-                if let Ok(text) = String::from_utf8(decoded) {
-                    if text.contains("://") && text.len() > 40 {
-                        if !results.contains(&s) {
+            if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes())
+                && let Ok(text) = String::from_utf8(decoded)
+                    && text.contains("://") && text.len() > 40
+                        && !results.contains(&s) {
                             results.push(s);
                         }
-                    }
-                }
-            }
         }
     }
 

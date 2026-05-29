@@ -1,8 +1,6 @@
 use crate::error::*;
 use crate::convert::ClashRule;
 use serde_yaml::{Value, Mapping, Number};
-use std::collections::HashMap;
-use std::sync::Mutex;
 
 /// Parsed result from downloading + converting a rule set
 #[derive(Debug, Clone)]
@@ -17,60 +15,55 @@ pub struct ParsedRuleset {
     pub behavior: String,
 }
 
-/// Simple in-memory cache for fetched rulesets (keyed by URL)
-static RULESET_CACHE: std::sync::LazyLock<Mutex<HashMap<String, ParsedRuleset>>> =
-    std::sync::LazyLock::new(|| Mutex::new(HashMap::new()));
-
-/// Clear the ruleset cache
-pub fn clear_cache() {
-    if let Ok(mut cache) = RULESET_CACHE.lock() {
-        cache.clear();
-    }
-}
-
 /// Fetch and parse a rule set, supporting both remote URLs and local file paths.
 ///
-/// Results are cached in-memory for the duration of the process to avoid
-/// re-downloading the same ruleset multiple times.
+/// Results are cached persistently (file-backed TTL cache) to avoid
+/// re-downloading the same ruleset across runs.
 pub async fn fetch_and_parse_ruleset(
     client: &reqwest::Client,
     cfg: &crate::config::RulesetConfig,
 ) -> Result<ParsedRuleset> {
-    // Check cache first
-    {
-        if let Ok(cache) = RULESET_CACHE.lock() {
-            if let Some(cached) = cache.get(&cfg.url) {
-                return Ok(cached.clone());
-            }
-        }
-    }
-
-    let content = if cfg.is_remote() {
-        fetch_remote_ruleset(client, &cfg.url).await?
+    if cfg.is_remote() {
+        let content = fetch_ruleset_with_cache(client, &cfg.url).await?;
+        let rules = parse_ruleset_content(&content)?;
+        let behavior = cfg.behavior.clone().unwrap_or_else(|| detect_behavior(&rules));
+        let large = rules.len() >= 50;
+        Ok(ParsedRuleset { group: cfg.group.clone(), rules, large, behavior })
     } else {
-        read_local_ruleset(&cfg.url)?
-    };
-
-    let rules = parse_ruleset_content(&content)?;
-    let behavior = cfg.behavior.clone().unwrap_or_else(|| detect_behavior(&rules));
-    let large = rules.len() >= 50;
-
-    let result = ParsedRuleset {
-        group: cfg.group.clone(),
-        rules,
-        large,
-        behavior,
-    };
-
-    // Cache the result
-    if let Ok(mut cache) = RULESET_CACHE.lock() {
-        cache.insert(cfg.url.clone(), result.clone());
+        let content = read_local_ruleset(&cfg.url)?;
+        let rules = parse_ruleset_content(&content)?;
+        let behavior = cfg.behavior.clone().unwrap_or_else(|| detect_behavior(&rules));
+        let large = rules.len() >= 50;
+        Ok(ParsedRuleset { group: cfg.group.clone(), rules, large, behavior })
     }
-
-    Ok(result)
 }
 
-/// Download ruleset content from a URL
+/// Download ruleset content from a URL with persistent caching
+async fn fetch_ruleset_with_cache(client: &reqwest::Client, url: &str) -> Result<String> {
+    // Check persistent cache first
+    if let Some(cached) = crate::cache::get(crate::cache::CacheKind::Ruleset, url) {
+        log::info!("Cache hit for ruleset: {}", url);
+        return Ok(cached);
+    }
+
+    // Fetch from remote
+    let result = fetch_remote_ruleset(client, url).await;
+
+    // On success, store in cache
+    if let Ok(ref data) = result {
+        crate::cache::set(crate::cache::CacheKind::Ruleset, url, data);
+    }
+    // On failure, serve stale cache if configured
+    else if crate::cache::is_enabled()
+        && let Some(stale) = crate::cache::get_stale(crate::cache::CacheKind::Ruleset, url) {
+            log::warn!("Ruleset fetch failed, serving stale cache: {}", url);
+            return Ok(stale);
+        }
+
+    result
+}
+
+/// Download ruleset content from a URL (no caching)
 async fn fetch_remote_ruleset(client: &reqwest::Client, url: &str) -> Result<String> {
     let resp = client.get(url).send().await?;
     if !resp.status().is_success() {
@@ -93,15 +86,14 @@ fn parse_ruleset_content(content: &str) -> Result<Vec<ClashRule>> {
     let trimmed = content.trim();
 
     // Try Clash rule-provider format (YAML with "payload:" key)
-    if let Ok(yaml) = serde_yaml::from_str::<Value>(trimmed) {
-        if let Some(payload) = yaml.get("payload").and_then(|v| v.as_sequence()) {
+    if let Ok(yaml) = serde_yaml::from_str::<Value>(trimmed)
+        && let Some(payload) = yaml.get("payload").and_then(|v| v.as_sequence()) {
             let mut rules = Vec::with_capacity(payload.len());
             for entry in payload {
-                if let Some(s) = entry.as_str() {
-                    if let Some(rule) = parse_single_rule(s) {
+                if let Some(s) = entry.as_str()
+                    && let Some(rule) = parse_single_rule(s) {
                         rules.push(rule);
                     }
-                }
             }
             if !rules.is_empty() {
                 // Infer the target policy by scanning the Surge-style entries;
@@ -109,7 +101,6 @@ fn parse_ruleset_content(content: &str) -> Result<Vec<ClashRule>> {
                 return Ok(rules);
             }
         }
-    }
 
     // Surge / Quantumult X / per-line format
     let mut rules = Vec::new();

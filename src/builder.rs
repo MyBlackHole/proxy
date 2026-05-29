@@ -1,5 +1,6 @@
 use std::path::Path;
 
+use chrono::Local;
 use regex::Regex;
 
 use serde_yaml::Value;
@@ -24,6 +25,54 @@ pub struct ClashGenerationConfig<'a> {
 }
 
 // ── Main Entry Point ───────────────────────────────────────────────────────
+
+/// Serialize a YAML section with its key for template variable substitution.
+///
+/// e.g. `serialize_yaml_section("proxies", &Value::Sequence(...))`
+/// returns `"proxies:\n  - name: ...\n  - name: ...\n"`
+fn serialize_yaml_section(key: &str, value: &Value) -> String {
+    let mut map = serde_yaml::Mapping::new();
+    map.insert(Value::String(key.into()), value.clone());
+    serde_yaml::to_string(&Value::Mapping(map)).unwrap_or_default()
+}
+
+/// Substitute subconverter-style template variables (`{{...}}`) in the template text
+/// with serialized YAML sections.
+///
+/// Supported variables:
+/// - `{{proxy}}` / `{{clash_proxy_config}}` — proxy entries section
+/// - `{{proxy_group}}` / `{{clash_proxy_group}}` — proxy-groups section
+/// - `{{rule}}` / `{{clash_rule}}` — rules section
+/// - `{{rule_provider}}` — rule-providers section
+/// - `{{proxy_provider}}` / `{{clash_proxy_provider}}` — proxy-providers section
+/// - `{{update}}` — current date/time string
+/// - `{{custom_http}}` / `{{custom_socks5}}` — empty string placeholders
+fn substitute_template_vars(
+    template: &str,
+    proxies_yaml: &str,
+    groups_yaml: &str,
+    rules_yaml: &str,
+    rule_providers_yaml: Option<&str>,
+    proxy_providers_yaml: Option<&str>,
+) -> String {
+    let now = Local::now().format("%Y-%m-%d %H:%M:%S").to_string();
+    let rp = rule_providers_yaml.unwrap_or("");
+    let pp = proxy_providers_yaml.unwrap_or("");
+
+    template
+        .replace("{{proxy}}", proxies_yaml)
+        .replace("{{clash_proxy_config}}", proxies_yaml)
+        .replace("{{proxy_group}}", groups_yaml)
+        .replace("{{clash_proxy_group}}", groups_yaml)
+        .replace("{{rule}}", rules_yaml)
+        .replace("{{clash_rule}}", rules_yaml)
+        .replace("{{rule_provider}}", rp)
+        .replace("{{proxy_provider}}", pp)
+        .replace("{{clash_proxy_provider}}", pp)
+        .replace("{{update}}", &now)
+        .replace("{{custom_http}}", "")
+        .replace("{{custom_socks5}}", "")
+}
 
 /// Build a complete Clash YAML config from enriched proxies and generation config
 pub async fn build_clash_config(
@@ -52,12 +101,11 @@ pub async fn build_clash_config(
     }
 
     // Smart groups (region-based)
-    if let Some(smart) = cfg.smart {
-        if smart.enable && cfg.custom_groups.is_empty() {
+    if let Some(smart) = cfg.smart
+        && smart.enable && cfg.custom_groups.is_empty() {
             // Only build smart groups when no custom groups defined
             build_smart_groups(smart, cfg.enriched, &mut groups, &mut auto_group_names, cfg.test_url);
         }
-    }
 
     // 3. Build the main "Proxy" select group
     let main_proxy_members: Vec<String> = if !custom_group_names.is_empty() {
@@ -81,12 +129,11 @@ pub async fn build_clash_config(
     let mut rule_providers: Vec<Value> = Vec::new();
 
     // Smart rules
-    if let Some(smart) = cfg.smart {
-        if smart.enable && smart.generate_rules {
+    if let Some(smart) = cfg.smart
+        && smart.enable && smart.generate_rules {
             let smart_rules = build_rules(smart);
             rules.extend(smart_rules);
         }
-    }
 
     // External rulesets (downloaded and parsed)
     let provider_threshold = cfg.template.map(|t| t.provider_threshold).unwrap_or(50);
@@ -127,23 +174,91 @@ pub async fn build_clash_config(
     // 5. Build proxy-providers section
     let proxy_providers = build_proxy_providers(&cfg);
 
-    // 6. Load or create base template
+    // ── Template Variable Substitution ────────────────────────────────────
+    //
+    // Strategy: serialize all sections to YAML strings first, then check if
+    // the template file contains `{{...}}` variables.
+    //
+    // If variables are found → TEXT-LEVEL substitution path:
+    //   Read template as raw text, replace each variable with serialized YAML,
+    //   parse the result as YAML. Sections are embedded directly.
+    //
+    // If no variables found → YAML-LEVEL injection path (current behavior):
+    //   Load template as YAML, strip known keys, inject sections.
+
+    let rule_values: Vec<Value> = rules.iter().map(|r| Value::String(r.to_rule_string())).collect();
+
+    // Serialize optional sections (only if non-empty)
+    let rule_providers_yaml = if !rule_providers.is_empty() {
+        let mut merged = serde_yaml::Mapping::new();
+        for rp in &rule_providers {
+            if let Some(map) = rp.as_mapping() {
+                for (k, v) in map {
+                    merged.insert(k.clone(), v.clone());
+                }
+            }
+        }
+        Some(serialize_yaml_section("rule-providers", &Value::Mapping(merged)))
+    } else {
+        None
+    };
+
+    let proxy_providers_yaml = proxy_providers.as_ref().map(|pp| {
+        serialize_yaml_section("proxy-providers", pp)
+    });
+
+    // Try substitution path (early return if successful)
+    if let Some(template) = cfg.template
+        && let Some(ref path) = template.base {
+            let pb = Path::new(path);
+            if pb.exists() {
+                let template_text = std::fs::read_to_string(path)?;
+                if template_text.contains("{{") {
+                    // ── TEXT-LEVEL SUBSTITUTION PATH ─────────────────────
+                    let proxies_yaml = serialize_yaml_section("proxies", &Value::Sequence(proxy_entries));
+                    let groups_yaml = serialize_yaml_section("proxy-groups", &Value::Sequence(groups));
+                    let rules_yaml = serialize_yaml_section("rules", &Value::Sequence(rule_values));
+
+                    let substituted = substitute_template_vars(
+                        &template_text,
+                        &proxies_yaml,
+                        &groups_yaml,
+                        &rules_yaml,
+                        rule_providers_yaml.as_deref(),
+                        proxy_providers_yaml.as_deref(),
+                    );
+                    let mut base: serde_yaml::Mapping = serde_yaml::from_str(&substituted)
+                        .map_err(|e| AppError::InvalidConfig(format!("Template substitution YAML: {}", e)))?;
+
+                    // Apply config overrides
+                    if let Some(ref overrides) = template.overrides {
+                        for (key, val) in overrides {
+                            base.insert(key.as_str().into(), toml_value_to_yaml(val));
+                        }
+                    }
+
+                    return serde_yaml::to_string(&Value::Mapping(base))
+                        .map_err(|e| AppError::InvalidConfig(format!("YAML serialization: {}", e)));
+                }
+            } else {
+                log::warn!("Template file not found: {}, using default header", path);
+            }
+        }
+
+    // ── NON-SUBSTITUTION PATH (current YAML-load + inject behavior) ──────
     let mut base = load_base_template(cfg.template)?;
 
-    // 6a. Apply config overrides from template (subconverter-style config add)
-    if let Some(ref template) = cfg.template {
-        if let Some(ref overrides) = template.overrides {
+    // Apply config overrides from template (subconverter-style config add)
+    if let Some(template) = cfg.template
+        && let Some(ref overrides) = template.overrides {
             for (key, val) in overrides {
                 base.insert(key.as_str().into(), toml_value_to_yaml(val));
             }
         }
-    }
 
     // 7. Inject proxies, proxy-groups, rules, rule-providers, proxy-providers
     base.insert("proxies".into(), Value::Sequence(proxy_entries));
     base.insert("proxy-groups".into(), Value::Sequence(groups));
-
-    let rule_values: Vec<Value> = rules.iter().map(|r| Value::String(r.to_rule_string())).collect();
     base.insert("rules".into(), Value::Sequence(rule_values));
 
     if !rule_providers.is_empty() {
@@ -171,8 +286,8 @@ pub async fn build_clash_config(
 
 /// Load the base template YAML, or use the default header
 fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::Mapping> {
-    if let Some(t) = template {
-        if let Some(path) = &t.base {
+    if let Some(t) = template
+        && let Some(path) = &t.base {
             let path = Path::new(path);
             if path.exists() {
                 let content = std::fs::read_to_string(path)?;
@@ -193,17 +308,90 @@ fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::M
             }
             log::warn!("Template file not found: {}, using default header", path.display());
         }
-    }
     Ok(default_clash_header())
 }
 
 // ── Custom Groups ──────────────────────────────────────────────────────────
 
-/// Build user-defined proxy groups from regex patterns
+/// Parse subconverter-style `!!` directive prefixes from a proxy entry string.
+/// Returns `(directive_name, pattern)` on success.
+fn parse_directive(entry: &str) -> Option<(&str, &str)> {
+    if entry.starts_with("!!TYPE=") {
+        Some(("TYPE", &entry[7..]))
+    } else if entry.starts_with("!!PORT=") {
+        Some(("PORT", &entry[7..]))
+    } else if entry.starts_with("!!SERVER=") {
+        Some(("SERVER", &entry[9..]))
+    } else if entry.starts_with("!!GROUP=") {
+        Some(("GROUP", &entry[8..]))
+    } else if entry.starts_with("!!GROUPID=") {
+        Some(("GROUPID", &entry[10..]))
+    } else if entry.starts_with("!!INSERT=") {
+        Some(("GROUPID", &entry[8..]))
+    } else {
+        None
+    }
+}
+
+/// Match a port `u16` against a subconverter-style range pattern.
+///
+/// Supported patterns (comma-separated):
+/// - `443`       — exact match
+/// - `1000-5000` — range (inclusive)
+/// - `3000+`     — greater than or equal
+/// - `500-`      — less than or equal
+/// - `!443`      — negation (NOT 443)
+/// - `!443,8080` — compound: NOT 443 AND NOT 8080
+/// - `!1-1000`   — negated range
+fn match_port_range(pattern: &str, port: u16) -> bool {
+    for part in pattern.split(',') {
+        let part = part.trim();
+        let negate = part.starts_with('!');
+        let actual = if negate { &part[1..] } else { part };
+        let matches = if let Some(rest) = actual.strip_suffix('+') {
+            // greater than or equal
+            if let Ok(min) = rest.parse::<u16>() {
+                port >= min
+            } else {
+                false
+            }
+        } else if let Some(rest) = actual.strip_suffix('-') {
+            // less than or equal
+            if let Ok(max) = rest.parse::<u16>() {
+                port <= max
+            } else {
+                false
+            }
+        } else if actual.contains('-') {
+            // range
+            let parts: Vec<&str> = actual.splitn(2, '-').collect();
+            if let (Ok(min), Ok(max)) =
+                (parts[0].trim().parse::<u16>(), parts[1].trim().parse::<u16>())
+            {
+                port >= min && port <= max
+            } else {
+                false
+            }
+        } else {
+            // exact
+            if let Ok(n) = actual.parse::<u16>() {
+                port == n
+            } else {
+                false
+            }
+        };
+        if matches != negate {
+            return true;
+        }
+    }
+    false
+}
+
+/// Build user-defined proxy groups from regex patterns and `!!` directives
 fn build_custom_groups(
     custom_cfgs: &[CustomGroupConfig],
     all_names: &[String],
-    _enriched: &[EnrichedProxy],
+    enriched: &[EnrichedProxy],
     groups: &mut Vec<Value>,
     group_names_out: &mut Vec<String>,
     test_url: &str,
@@ -218,15 +406,59 @@ fn build_custom_groups(
                 // Special directive: []DIRECT, []REJECT, []PASS, []GroupName
                 let inner = entry.trim_start_matches("[]");
                 members.push(inner.to_string());
+            } else if let Some((directive, pattern)) = parse_directive(entry) {
+                // !! directive matching against enriched proxy data
+                for ep in enriched {
+                    let matches = match directive {
+                        "TYPE" => {
+                            let type_str = match &ep.node {
+                                ProxyNode::Shadowsocks(_) => "SS",
+                                ProxyNode::ShadowsocksR(_) => "SSR",
+                                ProxyNode::VMess(_) => "VMESS",
+                                ProxyNode::Trojan(_) => "TROJAN",
+                                ProxyNode::VLESS(_) => "VLESS",
+                                ProxyNode::Hysteria(_) => "HYSTERIA",
+                                ProxyNode::Hysteria2(_) => "HYSTERIA2",
+                                ProxyNode::Tuic(_) => "TUIC",
+                                ProxyNode::Snell(_) => "SNELL",
+                                ProxyNode::Http(_) => "HTTP",
+                                ProxyNode::Socks5(_) => "SOCKS5",
+                                ProxyNode::AnyTLS(_) => "ANYTLS",
+                                ProxyNode::WireGuard(_) => "WIREGUARD",
+                            };
+                            if let Ok(re) = Regex::new(pattern) {
+                                re.is_match(type_str)
+                            } else {
+                                false
+                            }
+                        }
+                        "PORT" => match_port_range(pattern, ep.node.port()),
+                        "SERVER" => {
+                            if let Ok(re) = Regex::new(pattern) {
+                                re.is_match(ep.node.host())
+                            } else {
+                                false
+                            }
+                        }
+                        "GROUP" => false, // reserved for future use
+                        "GROUPID" => match_port_range(pattern, ep.source_id as u16),
+                        _ => false,
+                    };
+                    if matches {
+                        let name = ep.node.name().to_string();
+                        if !members.contains(&name) {
+                            members.push(name);
+                        }
+                    }
+                }
             } else {
                 // Regex pattern — match against all proxy names
                 if let Ok(re) = Regex::new(entry) {
                     for name in all_names {
-                        if re.is_match(name) {
-                            if !members.contains(name) {
+                        if re.is_match(name)
+                            && !members.contains(name) {
                                 members.push(name.clone());
                             }
-                        }
                     }
                 }
             }
@@ -398,22 +630,21 @@ fn build_proxy_providers(cfg: &ClashGenerationConfig<'_>) -> Option<Value> {
         entry.insert("path".into(), provider.path.as_str().into());
         entry.insert("interval".into(), Value::Number(serde_yaml::Number::from(provider.interval)));
 
-        if let Some(ref hc) = provider.health_check {
-            if hc.enable {
+        if let Some(ref hc) = provider.health_check
+            && hc.enable {
                 let mut hc_map = serde_yaml::Mapping::new();
                 hc_map.insert("enable".into(), true.into());
                 hc_map.insert("url".into(), hc.url.as_str().into());
                 hc_map.insert("interval".into(), Value::Number(serde_yaml::Number::from(hc.interval)));
                 entry.insert("health-check".into(), Value::Mapping(hc_map));
             }
-        }
 
         providers.insert(provider.name.as_str().into(), Value::Mapping(entry));
     }
 
     // 2. Auto-generate providers from domain sources
-    if template.auto_proxy_providers {
-        if let Some(domain_map) = cfg.domain_proxies {
+    if template.auto_proxy_providers
+        && let Some(domain_map) = cfg.domain_proxies {
             for (domain, proxy_names) in domain_map {
                 if proxy_names.is_empty() {
                     continue;
@@ -443,7 +674,6 @@ fn build_proxy_providers(cfg: &ClashGenerationConfig<'_>) -> Option<Value> {
                 providers.insert(provider_name.clone().into(), Value::Mapping(entry));
             }
         }
-    }
 
     if providers.is_empty() {
         None
@@ -472,6 +702,11 @@ mod tests {
             ws_headers: None,
             udp: None,
             packet_encoding: None,
+            http_path: None,
+            http_headers: None,
+            h2_path: None,
+            h2_host: None,
+            grpc_service_name: None,
         })
     }
 

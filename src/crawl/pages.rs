@@ -111,7 +111,10 @@ fn crawl_page_depth<'a>(client: &'a reqwest::Client, content: &'a str, remaining
 
         let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
             Ok(r) => r,
-            Err(_) => return Vec::new(),
+            Err(e) => {
+                log::warn!("[crawl_page_depth] failed to compile link regex: {}", e);
+                return Vec::new();
+            }
         };
 
         let mut results = Vec::new();

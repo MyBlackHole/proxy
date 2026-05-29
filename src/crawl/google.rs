@@ -18,7 +18,10 @@ pub async fn crawl_google(
     );
     let url_re = match url_re {
         Ok(r) => r,
-        Err(_) => return Ok(results),
+        Err(e) => {
+            log::warn!("[crawl_google] failed to compile URL regex: {}", e);
+            return Ok(results);
+        }
     };
 
     for start in (0..limit).step_by(num_per_page) {

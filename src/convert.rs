@@ -10,8 +10,15 @@ use crate::proxy::*;
 pub enum ClashRule {
     DomainSuffix(&'static str, &'static str),
     DomainKeyword(&'static str, &'static str),
+    Domain(&'static str, &'static str),
     GeoIP(&'static str, &'static str),
     Match(&'static str),
+    IPCIDR(&'static str, &'static str),
+    IPCIDR6(&'static str, &'static str),
+    SrcIPCIDR(&'static str, &'static str),
+    SrcPort(&'static str, &'static str),
+    DstPort(&'static str, &'static str),
+    ProcessName(&'static str, &'static str),
     Custom(String),
 }
 
@@ -20,8 +27,15 @@ impl ClashRule {
         match self {
             ClashRule::DomainSuffix(d, p) => format!("DOMAIN-SUFFIX,{},{}", d, p),
             ClashRule::DomainKeyword(k, p) => format!("DOMAIN-KEYWORD,{},{}", k, p),
+            ClashRule::Domain(d, p) => format!("DOMAIN,{},{}", d, p),
             ClashRule::GeoIP(c, p) => format!("GEOIP,{},{}", c, p),
             ClashRule::Match(p) => format!("MATCH,{}", p),
+            ClashRule::IPCIDR(c, p) => format!("IP-CIDR,{},{}", c, p),
+            ClashRule::IPCIDR6(c, p) => format!("IP-CIDR6,{},{}", c, p),
+            ClashRule::SrcIPCIDR(c, p) => format!("SRC-IP-CIDR,{},{}", c, p),
+            ClashRule::SrcPort(p, pol) => format!("SRC-PORT,{},{}", p, pol),
+            ClashRule::DstPort(p, pol) => format!("DST-PORT,{},{}", p, pol),
+            ClashRule::ProcessName(n, p) => format!("PROCESS-NAME,{},{}", n, p),
             ClashRule::Custom(s) => s.clone(),
         }
     }
@@ -357,7 +371,7 @@ pub fn convert_enriched_to_clash(
     proxies: &[EnrichedProxy],
     smart_cfg: Option<&SmartGroupConfig>,
 ) -> Result<String> {
-    let entries: Vec<serde_yaml::Value> = proxies.iter().map(|ep| build_clash_entry(&ep.node)).filter_map(|v| v).collect();
+    let entries: Vec<serde_yaml::Value> = proxies.iter().map(|ep| build_clash_entry(&ep.node)).flatten().collect();
     let all_names: Vec<String> = proxies.iter().map(|ep| ep.node.name().to_string()).collect();
     let all_yaml_names: Vec<serde_yaml::Value> = all_names.iter().map(|n| serde_yaml::Value::String(n.clone())).collect();
 
@@ -468,6 +482,11 @@ mod tests {
             ws_headers: None,
             udp: None,
             packet_encoding: None,
+            http_path: None,
+            http_headers: None,
+            h2_path: None,
+            h2_host: None,
+            grpc_service_name: None,
         })
     }
 
@@ -509,6 +528,11 @@ mod tests {
             ws_headers: None,
             udp: None,
             packet_encoding: None,
+            http_path: None,
+            http_headers: None,
+            h2_path: None,
+            h2_host: None,
+            grpc_service_name: None,
         });
 
         let mapping = parse_clash_yaml(&convert_proxies_to_clash(&[node]).unwrap());
@@ -582,9 +606,16 @@ mod tests {
     fn test_clash_rule_to_string() {
         assert_eq!(ClashRule::DomainSuffix("example.com", "Proxy").to_rule_string(), "DOMAIN-SUFFIX,example.com,Proxy");
         assert_eq!(ClashRule::DomainKeyword("google", "Proxy").to_rule_string(), "DOMAIN-KEYWORD,google,Proxy");
+        assert_eq!(ClashRule::Domain("example.com", "Proxy").to_rule_string(), "DOMAIN,example.com,Proxy");
         assert_eq!(ClashRule::GeoIP("CN", "DIRECT").to_rule_string(), "GEOIP,CN,DIRECT");
         assert_eq!(ClashRule::Match("Proxy").to_rule_string(), "MATCH,Proxy");
-        assert_eq!(ClashRule::DomainSuffix("test.org", "Proxy").to_rule_string(), "DOMAIN-SUFFIX,test.org,Proxy");
+        assert_eq!(ClashRule::IPCIDR("1.2.3.4/32", "Proxy").to_rule_string(), "IP-CIDR,1.2.3.4/32,Proxy");
+        assert_eq!(ClashRule::IPCIDR6("::1/128", "Proxy").to_rule_string(), "IP-CIDR6,::1/128,Proxy");
+        assert_eq!(ClashRule::SrcIPCIDR("10.0.0.0/8", "DIRECT").to_rule_string(), "SRC-IP-CIDR,10.0.0.0/8,DIRECT");
+        assert_eq!(ClashRule::SrcPort("1234", "Proxy").to_rule_string(), "SRC-PORT,1234,Proxy");
+        assert_eq!(ClashRule::DstPort("80", "DIRECT").to_rule_string(), "DST-PORT,80,DIRECT");
+        assert_eq!(ClashRule::ProcessName("chrome", "Proxy").to_rule_string(), "PROCESS-NAME,chrome,Proxy");
+        assert_eq!(ClashRule::Custom("DOMAIN-SUFFIX,test.org,Proxy".into()).to_rule_string(), "DOMAIN-SUFFIX,test.org,Proxy");
     }
 
     // ── Edge case: empty input ────────────────────────────────────────────────
@@ -679,6 +710,7 @@ mod tests {
             password: "pass123".into(), sni: Some("trojan.example.com".into()),
             alpn: Some(vec!["h2".into(), "http/1.1".into()]),
             skip_cert_verify: Some(true), udp: Some(true),
+            network: None, ws_path: None, ws_headers: None, grpc_service_name: None,
         })
     }
 
@@ -699,6 +731,7 @@ mod tests {
             password: "hy2-pass".into(), sni: Some("hy2.example.com".into()),
             skip_cert_verify: Some(true), alpn: Some(vec!["h3".into()]),
             obfs: Some("salamander".into()), obfs_password: Some("obfs-pass".into()),
+            ports: None, up: None, down: None, ca: None, ca_str: None, cwnd: None, hop_interval: None,
         })
     }
 
@@ -756,6 +789,10 @@ mod tests {
             skip_cert_verify: Some(true),
             alpn: Some(vec!["h3".into()]),
             obfs: Some("faketcp".into()),
+            up_speed: None, down_speed: None, obfs_password: None,
+            ports: None, fingerprint: None, ca: None, ca_str: None,
+            recv_window_conn: None, recv_window: None,
+            disable_mtu_discovery: None, fast_open: None, hop_interval: None,
         })
     }
 

@@ -21,7 +21,10 @@ pub async fn crawl_yandex(
     );
     let re = match re {
         Ok(r) => r,
-        Err(_) => return Ok(results),
+        Err(e) => {
+            log::warn!("[crawl_yandex] failed to compile URL regex: {}", e);
+            return Ok(results);
+        }
     };
 
     for page in 0..total_pages {

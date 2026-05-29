@@ -4,8 +4,21 @@ use std::future::Future;
 use crate::airport;
 use crate::alive;
 use crate::builder;
+use crate::cache;
 use crate::config::*;
 use crate::convert;
+use crate::preprocess;
+
+/// Initialize persistent cache from config settings
+fn init_cache_from_config(settings: &SettingsConfig) {
+    cache::init_cache(
+        settings.cache.enabled,
+        &settings.cache.dir,
+        settings.cache.subscription_ttl,
+        settings.cache.ruleset_ttl,
+        settings.cache.serve_stale,
+    );
+}
 use crate::crawl;
 use crate::deduce;
 use crate::error::*;
@@ -25,6 +38,8 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
         config.domains.len(),
         config.groups.len()
     );
+
+    init_cache_from_config(&config.settings);
 
     let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
 
@@ -60,7 +75,7 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
 
     // 7. Per-group processing (with smart/legacy converter)
     for (name, group) in &config.groups {
-        process_group_smart(&client, group, &all_enriched, &storage).await?;
+        process_group_smart(&client, group, &all_enriched, &storage, config.settings.append_userinfo).await?;
         log::info!("Group {} processed", name);
     }
 
@@ -106,14 +121,15 @@ async fn process_domain_subscriptions(
     config: &AppConfig,
 ) -> Result<Vec<EnrichedProxy>> {
     let mut all_enriched: Vec<EnrichedProxy> = Vec::new();
-    for domain in &config.domains {
-        match process_domain_enriched(domain, &config.settings).await {
-            Ok(proxies) => {
-                log::info!("Domain {}: {} alive enriched proxies", domain.name, proxies.len());
-                all_enriched.extend(proxies);
-            }
-            Err(e) => log::error!("Failed to process domain {}: {}", domain.name, e),
-        }
+    for (idx, domain) in config.domains.iter().enumerate() {
+        let source_id = (idx + 1) as u32; // 1-based to match subconverter convention
+        let enriched = process_domain_enriched(domain, &config.settings).await?;
+        let proxies: Vec<EnrichedProxy> = enriched
+            .into_iter()
+            .map(|mut ep| { ep.source_id = source_id; ep })
+            .collect();
+        log::info!("Domain {}: {} alive enriched proxies", domain.name, proxies.len());
+        all_enriched.extend(proxies);
     }
     Ok(all_enriched)
 }
@@ -587,6 +603,7 @@ async fn process_group_smart(
     group: &GroupConfig,
     all_enriched: &[EnrichedProxy],
     storage: &HashMap<String, Box<dyn StorageBackend>>,
+    append_userinfo: bool,
 ) -> Result<()> {
     let enriched = if let Some(ref reg) = group.regularize {
         if reg.enable {
@@ -601,6 +618,14 @@ async fn process_group_smart(
         }
     } else {
         all_enriched.to_vec()
+    };
+
+    // Apply pre-processing pipeline (rename, filter, sort, etc.)
+    let enriched = if let Some(ref pp) = group.preprocess {
+        log::info!("Applying pre-processing pipeline to {} proxies", enriched.len());
+        preprocess::preprocess_proxies(enriched, pp)
+    } else {
+        enriched
     };
 
     // Decide which converter to use
@@ -644,6 +669,19 @@ async fn process_group_smart(
             convert::convert_enriched_to_clash(&enriched, Some(&SmartGroupConfig::default()))?
         };
 
+        // Prepend subscription usage info as YAML comments if available
+        let content = if append_userinfo && crate::userinfo::has_data() {
+            let mut with_comments = String::new();
+            with_comments.push_str("# ── Subscription Usage ─────────────────────────────────────\n");
+            with_comments.push_str(&crate::userinfo::format_all());
+            with_comments.push('\n');
+            with_comments.push_str("# ────────────────────────────────────────────────────────────\n");
+            with_comments.push_str(&content);
+            with_comments
+        } else {
+            content
+        };
+
         if let Some(backend) = storage.get(target_name) {
             backend.write(&content, target_name).await?;
             log::info!("Pushed to '{}'", target_name);
@@ -660,11 +698,18 @@ pub async fn check_alive_only(config_path: &str) -> Result<()> {
     let config = AppConfig::from_file(config_path)?;
     log::info!("Running health check only mode");
 
+    init_cache_from_config(&config.settings);
+
     let mut all_enriched = Vec::new();
-    for domain in &config.domains {
+    for (idx, domain) in config.domains.iter().enumerate() {
+        let source_id = (idx + 1) as u32;
         log::info!("Check-only: re-validating proxies for domain {}", domain.name);
         match process_domain_enriched(domain, &config.settings).await {
             Ok(proxies) => {
+                let proxies: Vec<EnrichedProxy> = proxies
+                    .into_iter()
+                    .map(|mut ep| { ep.source_id = source_id; ep })
+                    .collect();
                 log::info!(
                     "Domain {}: {} proxies alive after re-check",
                     domain.name,
@@ -698,6 +743,7 @@ pub async fn check_alive_only(config_path: &str) -> Result<()> {
             group,
             &all_enriched,
             &storage,
+            config.settings.append_userinfo,
         )
         .await?;
         log::info!("Group {} processed", name);

@@ -57,13 +57,19 @@ fn parse_host_port(host: &str, port_str: &str, default_port: u16) -> Result<(Str
     if !port_str.is_empty() {
         let port: u16 = port_str
             .parse()
-            .map_err(|_| AppError::InvalidProxy(format!("invalid port: {}", port_str)))?;
+            .map_err(|e| {
+                log::warn!("Failed to parse port '{}': {}", port_str, e);
+                AppError::InvalidProxy(format!("invalid port: {}", port_str))
+            })?;
         Ok((host.to_string(), port))
     } else if let Some(idx) = host.rfind(':') {
         let h = &host[..idx];
         let p: u16 = host[idx + 1..]
             .parse()
-            .map_err(|_| AppError::InvalidProxy(format!("invalid port in host: {}", host)))?;
+            .map_err(|e| {
+                log::warn!("Failed to parse port in host '{}': {}", host, e);
+                AppError::InvalidProxy(format!("invalid port in host: {}", host))
+            })?;
         Ok((h.to_string(), p))
     } else {
         Ok((host.to_string(), default_port))
@@ -96,7 +102,10 @@ fn b64_decode_standard(input: &str) -> Result<String> {
                 })
         })
         .map_err(AppError::Base64)?;
-    String::from_utf8(bytes).map_err(|_| AppError::InvalidProxy("base64 decode not utf-8".into()))
+    String::from_utf8(bytes).map_err(|e| {
+        log::warn!("Base64 decoded bytes are not valid UTF-8: {}", e);
+        AppError::InvalidProxy("base64 decode not utf-8".into())
+    })
 }
 
 fn b64_decode_safe(input: &str) -> Result<String> {
@@ -112,7 +121,10 @@ fn b64_decode_safe(input: &str) -> Result<String> {
         .decode(padded.as_bytes())
         .or_else(|_| base64::engine::general_purpose::STANDARD.decode(padded.as_bytes()))
         .map_err(AppError::Base64)?;
-    String::from_utf8(bytes).map_err(|_| AppError::InvalidProxy("base64 decode not utf-8".into()))
+    String::from_utf8(bytes).map_err(|e| {
+        log::warn!("Base64 safe decoded bytes are not valid UTF-8: {}", e);
+        AppError::InvalidProxy("base64 decode not utf-8".into())
+    })
 }
 
 fn extract_name_from_url(url: &Url) -> Option<String> {
@@ -146,7 +158,10 @@ pub fn parse_vmess(raw_url: &str) -> Result<ProxyNode> {
         .unwrap_or_default();
     let port: u16 = port_str
         .parse()
-        .map_err(|_| AppError::InvalidProxy(format!("vmess: invalid port: {}", port_str)))?;
+        .map_err(|e| {
+            log::warn!("Failed to parse vmess port '{}': {}", port_str, e);
+            AppError::InvalidProxy(format!("vmess: invalid port: {}", port_str))
+        })?;
 
     let uuid = vm
         .remove("id")
@@ -189,22 +204,78 @@ pub fn parse_vmess(raw_url: &str) -> Result<ProxyNode> {
         .remove("net")
         .and_then(|v| v.as_str().map(|s| s.to_string()));
 
-    let ws_path = vm
-        .remove("path")
-        .or_else(|| vm.remove("wspath"))
-        .and_then(|v| v.as_str().map(|s| s.to_string()))
-        .filter(|s| !s.is_empty());
+    let path_val = vm.remove("path");
+    let wspath_val = vm.remove("wspath");
 
-    let ws_headers = vm
-        .remove("host")
-        .or_else(|| vm.remove("headers"))
+    let ws_path = path_val.as_ref()
         .and_then(|v| v.as_str().map(|s| s.to_string()))
         .filter(|s| !s.is_empty())
+        .or_else(|| wspath_val.as_ref()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty()));
+
+    let http_path = path_val.as_ref().and_then(|v| match v {
+        serde_json::Value::Array(arr) => {
+            let strs: Vec<String> = arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect();
+            if strs.is_empty() { None } else { Some(strs) }
+        }
+        serde_json::Value::String(s) => {
+            serde_json::from_str::<Vec<String>>(s).ok().filter(|v| !v.is_empty())
+        }
+        _ => None,
+    });
+
+    let host_val = vm.remove("host");
+    let headers_val = vm.remove("headers");
+
+    let ws_headers = host_val.as_ref()
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty())
+        .or_else(|| headers_val.as_ref()
+            .and_then(|v| v.as_str().map(|s| s.to_string()))
+            .filter(|s| !s.is_empty()))
         .map(|h| {
             let mut map = HashMap::new();
             map.insert("Host".to_string(), h);
             map
         });
+
+    let http_headers = host_val.as_ref().and_then(|v| match v {
+        serde_json::Value::Object(obj) => {
+            let mut map = HashMap::new();
+            for (k, v) in obj {
+                if let Some(s) = v.as_str() {
+                    map.insert(k.clone(), s.to_string());
+                }
+            }
+            if map.is_empty() { None } else { Some(map) }
+        }
+        serde_json::Value::String(s) => {
+            serde_json::from_str::<HashMap<String, String>>(s).ok().filter(|m| !m.is_empty())
+        }
+        _ => None,
+    });
+
+    let h2_path = vm
+        .remove("h2_path")
+        .or_else(|| vm.remove("h2path"))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
+
+    let h2_host = vm
+        .remove("h2_host")
+        .or_else(|| vm.remove("h2host"))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
+
+    let grpc_service_name = vm
+        .remove("service_name")
+        .or_else(|| vm.remove("serviceName"))
+        .or_else(|| vm.remove("grpc_service_name"))
+        .and_then(|v| v.as_str().map(|s| s.to_string()))
+        .filter(|s| !s.is_empty());
 
     let packet_encoding = vm
         .remove("packetEncoding")
@@ -234,6 +305,11 @@ pub fn parse_vmess(raw_url: &str) -> Result<ProxyNode> {
         ws_headers,
         udp: None,
         packet_encoding,
+        http_path,
+        http_headers,
+        h2_path,
+        h2_host,
+        grpc_service_name,
     }))
 }
 
@@ -275,7 +351,9 @@ pub fn parse_ss(raw_url: &str) -> Result<ProxyNode> {
     } else {
         let decoded = b64_decode_safe(remainder)?;
         if decoded.contains('@') {
-            let (creds, host_part) = decoded.split_once('@').unwrap();
+            let (creds, host_part) = decoded.split_once('@').ok_or_else(|| {
+                AppError::InvalidProxy(format!("ss: malformed credentials in: {}", decoded))
+            })?;
             let sep = creds.find(':').ok_or_else(|| {
                 AppError::InvalidProxy(format!("ss: invalid credentials: {}", decoded))
             })?;
@@ -362,6 +440,16 @@ pub fn parse_trojan(raw_url: &str) -> Result<ProxyNode> {
         .map(|s| s == "true" || s == "1");
     let udp = params.get("udp").map(|s| s == "true" || s == "1");
 
+    let network = params.get("type").or(params.get("network")).cloned();
+    let ws_path = params.get("path").or(params.get("ws-path")).cloned().filter(|s| !s.is_empty());
+    let ws_headers = params.get("host").or(params.get("ws-headers")).cloned().filter(|s| !s.is_empty())
+        .map(|h| {
+            let mut map = HashMap::new();
+            map.insert("Host".to_string(), h);
+            map
+        });
+    let grpc_service_name = params.get("serviceName").or(params.get("service_name")).or(params.get("grpc_service_name")).cloned();
+
     Ok(ProxyNode::Trojan(TrojanConfig {
         name,
         server: host.to_string(),
@@ -371,6 +459,10 @@ pub fn parse_trojan(raw_url: &str) -> Result<ProxyNode> {
         alpn,
         skip_cert_verify,
         udp,
+        network,
+        ws_path,
+        ws_headers,
+        grpc_service_name,
     }))
 }
 
@@ -395,7 +487,10 @@ pub fn parse_ssr(raw_url: &str) -> Result<ProxyNode> {
     let server = parts[0].to_string();
     let port: u16 = parts[1]
         .parse()
-        .map_err(|_| AppError::InvalidProxy(format!("ssr: invalid port: {}", parts[1])))?;
+        .map_err(|e| {
+            log::warn!("Failed to parse SSR port '{}': {}", parts[1], e);
+            AppError::InvalidProxy(format!("ssr: invalid port: {}", parts[1]))
+        })?;
     let protocol = parts[2].to_string();
     let cipher = parts[3].to_string();
     let obfs = parts[4].to_string();
@@ -627,6 +722,18 @@ pub fn parse_hysteria(raw_url: &str) -> Result<ProxyNode> {
         skip_cert_verify,
         alpn,
         obfs,
+        up_speed: None,
+        down_speed: None,
+        obfs_password: None,
+        ports: None,
+        fingerprint: None,
+        ca: None,
+        ca_str: None,
+        recv_window_conn: None,
+        recv_window: None,
+        disable_mtu_discovery: None,
+        fast_open: None,
+        hop_interval: None,
     }))
 }
 
@@ -679,6 +786,13 @@ pub fn parse_hysteria2(raw_url: &str) -> Result<ProxyNode> {
         alpn,
         obfs,
         obfs_password,
+        ports: None,
+        up: None,
+        down: None,
+        ca: None,
+        ca_str: None,
+        cwnd: None,
+        hop_interval: None,
     }))
 }
 
@@ -910,6 +1024,11 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     ws_headers: None,
                     udp: None,
                     packet_encoding: None,
+                    http_path: None,
+                    http_headers: None,
+                    h2_path: None,
+                    h2_host: None,
+                    grpc_service_name: None,
                 }));
             }
             "trojan" => {
@@ -931,6 +1050,10 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     alpn: None,
                     skip_cert_verify: None,
                     udp: None,
+                    network: None,
+                    ws_path: None,
+                    ws_headers: None,
+                    grpc_service_name: None,
                 }));
             }
             "vless" => {
@@ -1003,6 +1126,13 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     alpn: None,
                     obfs,
                     obfs_password,
+                    ports: None,
+                    up: None,
+                    down: None,
+                    ca: None,
+                    ca_str: None,
+                    cwnd: None,
+                    hop_interval: None,
                 }));
             }
             "hysteria" | "hy" => {
@@ -1040,6 +1170,18 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     skip_cert_verify: None,
                     alpn: None,
                     obfs,
+                    up_speed: None,
+                    down_speed: None,
+                    obfs_password: None,
+                    ports: None,
+                    fingerprint: None,
+                    ca: None,
+                    ca_str: None,
+                    recv_window_conn: None,
+                    recv_window: None,
+                    disable_mtu_discovery: None,
+                    fast_open: None,
+                    hop_interval: None,
                 }));
             }
             "tuic" => {
@@ -1107,6 +1249,58 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     sni: None,
                     skip_cert_verify: None,
                     udp: None,
+                }));
+            }
+            "wireguard" => {
+                let private_key = obj
+                    .get("private_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let public_key = obj
+                    .get("public_key")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let ip = obj
+                    .get("self_ip")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
+                let ipv6 = obj
+                    .get("self_ipv6")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let dns = obj
+                    .get("dns")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let mtu = obj
+                    .get("mtu")
+                    .and_then(|v| v.as_u64())
+                    .map(|n| n as u32);
+                let preshared_key = obj
+                    .get("preshared_key")
+                    .and_then(|v| v.as_str())
+                    .map(|s| s.to_string());
+                let udp = obj
+                    .get("udp")
+                    .and_then(|v| match v {
+                        serde_json::Value::Bool(b) => Some(*b),
+                        _ => None,
+                    });
+                proxies.push(ProxyNode::WireGuard(WireGuardConfig {
+                    name: tag,
+                    server,
+                    port,
+                    private_key,
+                    public_key,
+                    ip,
+                    ipv6,
+                    dns,
+                    mtu,
+                    preshared_key,
+                    udp,
                 }));
             }
             _ => {}
@@ -1219,6 +1413,11 @@ fn parse_quantumult_line(line: &str) -> Option<ProxyNode> {
                 ws_headers: None,
                 udp: None,
                 packet_encoding: None,
+                http_path: None,
+                http_headers: None,
+                h2_path: None,
+                h2_host: None,
+                grpc_service_name: None,
             }))
         }
         "trojan" => {
@@ -1239,6 +1438,10 @@ fn parse_quantumult_line(line: &str) -> Option<ProxyNode> {
                 alpn: None,
                 skip_cert_verify: None,
                 udp: None,
+                network: None,
+                ws_path: None,
+                ws_headers: None,
+                grpc_service_name: None,
             }))
         }
         _ => None,
@@ -1282,13 +1485,11 @@ pub fn parse_quantumult(data: &str) -> Vec<ProxyNode> {
         }
 
         // Try base64 decode on the line (common in Quantumult X subscriptions)
-        if is_likely_base64_line(trimmed) {
-            if let Ok(decoded) = b64_decode_standard(trimmed) {
-                if let Some(node) = parse_quantumult_line(decoded.trim()) {
+        if is_likely_base64_line(trimmed)
+            && let Ok(decoded) = b64_decode_standard(trimmed)
+                && let Some(node) = parse_quantumult_line(decoded.trim()) {
                     proxies.push(node);
                 }
-            }
-        }
     }
 
     proxies
@@ -1436,6 +1637,11 @@ fn parse_surfboard_line(line: &str) -> Option<ProxyNode> {
                 ws_headers: None,
                 udp: None,
                 packet_encoding: None,
+                http_path: None,
+                http_headers: None,
+                h2_path: None,
+                h2_host: None,
+                grpc_service_name: None,
             }))
         }
         "trojan" => {
@@ -1461,6 +1667,10 @@ fn parse_surfboard_line(line: &str) -> Option<ProxyNode> {
                 alpn: None,
                 skip_cert_verify,
                 udp,
+                network: None,
+                ws_path: None,
+                ws_headers: None,
+                grpc_service_name: None,
             }))
         }
         "vless" => {
@@ -1520,6 +1730,13 @@ fn parse_surfboard_line(line: &str) -> Option<ProxyNode> {
                 alpn: None,
                 obfs,
                 obfs_password: None,
+                ports: None,
+                up: None,
+                down: None,
+                ca: None,
+                ca_str: None,
+                cwnd: None,
+                hop_interval: None,
             }))
         }
         "http" => {
@@ -1586,9 +1803,9 @@ pub fn parse_subscribe(text: &str) -> Vec<ProxyNode> {
     }
 
     // 1. Sing-box detection: JSON array with proxy-like objects
-    if trimmed.starts_with('[') {
-        if let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed) {
-            if v.iter().any(|o| {
+    if trimmed.starts_with('[')
+        && let Ok(v) = serde_json::from_str::<Vec<serde_json::Value>>(trimmed)
+            && v.iter().any(|o| {
                 o.get("type")
                     .and_then(|t| t.as_str())
                     .is_some()
@@ -1599,8 +1816,6 @@ pub fn parse_subscribe(text: &str) -> Vec<ProxyNode> {
                     return proxies;
                 }
             }
-        }
-    }
 
     // 2. Surfboard detection: contains [Proxy] section
     if trimmed.contains("[Proxy]") || trimmed.contains("[proxy]") {

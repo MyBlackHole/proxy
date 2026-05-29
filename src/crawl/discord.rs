@@ -79,15 +79,13 @@ pub async fn crawl_discord(
             if let Some(attachments) = msg.get("attachments").and_then(|v| v.as_array()) {
                 for attachment in attachments {
                     if let Some(url_str) = attachment.get("url").and_then(|v| v.as_str()) {
-                        if url_str.ends_with(".txt") || url_str.ends_with(".yaml")
-                            || url_str.ends_with(".yml") || url_str.ends_with(".conf")
-                        {
-                            if let Ok(resp) = client.get(url_str).send().await
+                        if (url_str.ends_with(".txt") || url_str.ends_with(".yaml")
+                            || url_str.ends_with(".yml") || url_str.ends_with(".conf"))
+                            && let Ok(resp) = client.get(url_str).send().await
                                 && let Ok(text) = resp.text().await
                             {
                                 results.extend(extract_subscribes(&text));
                             }
-                        }
                     }
                 }
             }

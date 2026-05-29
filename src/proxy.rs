@@ -30,6 +30,8 @@ pub enum ProxyNode {
     Socks5(Socks5Config),
     #[serde(rename = "anytls")]
     AnyTLS(AnyTLSConfig),
+    #[serde(rename = "wireguard")]
+    WireGuard(WireGuardConfig),
 }
 
 /// Dedup key: server:port + credential hash
@@ -69,7 +71,7 @@ macro_rules! proxy_accessors {
 
 proxy_accessors!(
     Shadowsocks, ShadowsocksR, VMess, Trojan, VLESS,
-    Hysteria, Hysteria2, Tuic, Snell, Http, Socks5, AnyTLS
+    Hysteria, Hysteria2, Tuic, Snell, Http, Socks5, AnyTLS, WireGuard
 );
 
 impl ProxyNode {
@@ -88,6 +90,7 @@ impl ProxyNode {
             ProxyNode::Http(c) => c.username.as_bytes(),
             ProxyNode::Socks5(c) => c.username.as_bytes(),
             ProxyNode::AnyTLS(c) => c.password.as_bytes(),
+            ProxyNode::WireGuard(c) => c.private_key.as_bytes(),
         };
         let hash = hex::encode(Sha256::digest(cred_bytes));
         DedupKey {
@@ -113,6 +116,7 @@ impl ProxyNode {
             ProxyNode::Http(c) => c.clash_mapping(),
             ProxyNode::Socks5(c) => c.clash_mapping(),
             ProxyNode::AnyTLS(c) => c.clash_mapping(),
+            ProxyNode::WireGuard(c) => c.clash_mapping(),
         }
     }
 }
@@ -159,6 +163,11 @@ proxy_fields!(VMessConfig {
     ws_headers: Option<HashMap<String, String>>,
     udp: Option<bool>,
     packet_encoding: Option<String>,
+    http_path: Option<Vec<String>>,
+    http_headers: Option<HashMap<String, String>>,
+    h2_path: Option<String>,
+    h2_host: Option<String>,
+    grpc_service_name: Option<String>,
 });
 
 proxy_fields!(TrojanConfig {
@@ -167,6 +176,10 @@ proxy_fields!(TrojanConfig {
     alpn: Option<Vec<String>>,
     skip_cert_verify: Option<bool>,
     udp: Option<bool>,
+    network: Option<String>,
+    ws_path: Option<String>,
+    ws_headers: Option<HashMap<String, String>>,
+    grpc_service_name: Option<String>,
 });
 
 proxy_fields!(VLESSConfig {
@@ -190,6 +203,18 @@ proxy_fields!(HysteriaConfig {
     skip_cert_verify: Option<bool>,
     alpn: Option<Vec<String>>,
     obfs: Option<String>,
+    up_speed: Option<u32>,
+    down_speed: Option<u32>,
+    obfs_password: Option<String>,
+    ports: Option<String>,
+    fingerprint: Option<String>,
+    ca: Option<String>,
+    ca_str: Option<String>,
+    recv_window_conn: Option<u32>,
+    recv_window: Option<u32>,
+    disable_mtu_discovery: Option<bool>,
+    fast_open: Option<bool>,
+    hop_interval: Option<u32>,
 });
 
 proxy_fields!(Hysteria2Config {
@@ -199,6 +224,13 @@ proxy_fields!(Hysteria2Config {
     alpn: Option<Vec<String>>,
     obfs: Option<String>,
     obfs_password: Option<String>,
+    ports: Option<String>,
+    up: Option<u32>,
+    down: Option<u32>,
+    ca: Option<String>,
+    ca_str: Option<String>,
+    cwnd: Option<u32>,
+    hop_interval: Option<u32>,
 });
 
 proxy_fields!(TuicConfig {
@@ -239,6 +271,17 @@ proxy_fields!(AnyTLSConfig {
     sni: Option<String>,
     skip_cert_verify: Option<bool>,
     alpn: Option<Vec<String>>,
+});
+
+proxy_fields!(WireGuardConfig {
+    private_key: String,
+    public_key: String,
+    ip: String,
+    ipv6: Option<String>,
+    dns: Option<String>,
+    mtu: Option<u32>,
+    preshared_key: Option<String>,
+    udp: Option<bool>,
 });
 
 // ── Clash YAML Mapping for each config type ──────────────────────────────
@@ -292,11 +335,46 @@ impl VMessConfig {
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
         if let Some(ref v) = self.network { m.insert("network".into(), v.as_str().into()); }
         if let Some(ref v) = self.ws_path { m.insert("ws-path".into(), v.as_str().into()); }
-        if let Some(ref h) = self.ws_headers { if let Some(host) = h.get("Host") {
+        if let Some(ref h) = self.ws_headers && let Some(host) = h.get("Host") {
             let mut hm = Mapping::new();
             hm.insert("Host".into(), host.as_str().into());
             m.insert("ws-headers".into(), Value::Mapping(hm));
-        }}
+        }
+        if let Some(ref net) = self.network {
+            if net == "http" {
+                if let Some(ref paths) = self.http_path {
+                    let mut http_opts = Mapping::new();
+                    http_opts.insert("method".into(), "GET".into());
+                    http_opts.insert("path".into(), Value::Sequence(
+                        paths.iter().map(|p| Value::String(p.clone())).collect()
+                    ));
+                    if let Some(ref headers) = self.http_headers {
+                        let mut hdrs = Mapping::new();
+                        for (k, v) in headers {
+                            hdrs.insert(k.as_str().into(), v.as_str().into());
+                        }
+                        http_opts.insert("headers".into(), Value::Mapping(hdrs));
+                    }
+                    m.insert("http-opts".into(), Value::Mapping(http_opts));
+                }
+            } else if net == "h2" {
+                let mut h2_opts = Mapping::new();
+                if let Some(ref path) = self.h2_path {
+                    h2_opts.insert("path".into(), path.as_str().into());
+                }
+                if let Some(ref host) = self.h2_host {
+                    h2_opts.insert("host".into(), host.as_str().into());
+                }
+                if !h2_opts.is_empty() {
+                    m.insert("h2-opts".into(), Value::Mapping(h2_opts));
+                }
+            } else if net == "grpc"
+                && let Some(ref sn) = self.grpc_service_name {
+                    let mut grpc_opts = Mapping::new();
+                    grpc_opts.insert("grpc-service-name".into(), sn.as_str().into());
+                    m.insert("grpc-opts".into(), Value::Mapping(grpc_opts));
+                }
+        }
         if let Some(v) = self.udp { m.insert("udp".into(), v.into()); }
         if let Some(ref v) = self.packet_encoding { m.insert("packet-encoding".into(), v.as_str().into()); }
         m
@@ -316,6 +394,28 @@ impl TrojanConfig {
             m.insert("alpn".into(), Value::Sequence(v.iter().map(|s| Value::String(s.clone())).collect()));
         }
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
+        if let Some(ref net) = self.network {
+            if net == "ws" {
+                let mut ws_opts = Mapping::new();
+                if let Some(ref path) = self.ws_path {
+                    ws_opts.insert("path".into(), path.as_str().into());
+                }
+                if let Some(ref headers) = self.ws_headers
+                    && let Some(host) = headers.get("Host") {
+                        let mut hm = Mapping::new();
+                        hm.insert("Host".into(), host.as_str().into());
+                        ws_opts.insert("headers".into(), Value::Mapping(hm));
+                    }
+                if !ws_opts.is_empty() {
+                    m.insert("ws-opts".into(), Value::Mapping(ws_opts));
+                }
+            } else if net == "grpc"
+                && let Some(ref sn) = self.grpc_service_name {
+                    let mut grpc_opts = Mapping::new();
+                    grpc_opts.insert("grpc-service-name".into(), sn.as_str().into());
+                    m.insert("grpc-opts".into(), Value::Mapping(grpc_opts));
+                }
+        }
         if let Some(v) = self.udp { m.insert("udp".into(), v.into()); }
         m
     }
@@ -334,11 +434,11 @@ impl VLESSConfig {
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
         if let Some(ref v) = self.network { m.insert("network".into(), v.as_str().into()); }
         if let Some(ref v) = self.ws_path { m.insert("ws-path".into(), v.as_str().into()); }
-        if let Some(ref h) = self.ws_headers { if let Some(host) = h.get("Host") {
+        if let Some(ref h) = self.ws_headers && let Some(host) = h.get("Host") {
             let mut hm = Mapping::new();
             hm.insert("Host".into(), host.as_str().into());
             m.insert("ws-headers".into(), Value::Mapping(hm));
-        }}
+        }
         if let Some(ref v) = self.flow { m.insert("flow".into(), v.as_str().into()); }
         if let Some(ref v) = self.packet_encoding { m.insert("packet-encoding".into(), v.as_str().into()); }
         m
@@ -362,6 +462,18 @@ impl HysteriaConfig {
             m.insert("alpn".into(), Value::Sequence(v.iter().map(|s| Value::String(s.clone())).collect()));
         }
         if let Some(ref v) = self.obfs { m.insert("obfs".into(), v.as_str().into()); }
+        if let Some(ref v) = self.ports { m.insert("ports".into(), v.as_str().into()); }
+        if let Some(v) = self.up_speed { m.insert("up-speed".into(), Value::Number(Number::from(v))); }
+        if let Some(v) = self.down_speed { m.insert("down-speed".into(), Value::Number(Number::from(v))); }
+        if let Some(ref v) = self.obfs_password { m.insert("obfs-password".into(), v.as_str().into()); }
+        if let Some(ref v) = self.fingerprint { m.insert("fingerprint".into(), v.as_str().into()); }
+        if let Some(ref v) = self.ca { m.insert("ca".into(), v.as_str().into()); }
+        if let Some(ref v) = self.ca_str { m.insert("ca-str".into(), v.as_str().into()); }
+        if let Some(v) = self.recv_window_conn { m.insert("recv-window-conn".into(), Value::Number(Number::from(v))); }
+        if let Some(v) = self.recv_window { m.insert("recv-window".into(), Value::Number(Number::from(v))); }
+        if let Some(v) = self.disable_mtu_discovery { m.insert("disable-mtu-discovery".into(), v.into()); }
+        if let Some(v) = self.fast_open { m.insert("fast-open".into(), v.into()); }
+        if let Some(v) = self.hop_interval { m.insert("hop-interval".into(), Value::Number(Number::from(v))); }
         m
     }
 }
@@ -381,6 +493,13 @@ impl Hysteria2Config {
         if let Some(ref v) = self.alpn {
             m.insert("alpn".into(), Value::Sequence(v.iter().map(|s| Value::String(s.clone())).collect()));
         }
+        if let Some(ref v) = self.ports { m.insert("ports".into(), v.as_str().into()); }
+        if let Some(v) = self.up { m.insert("up".into(), Value::Number(Number::from(v))); }
+        if let Some(v) = self.down { m.insert("down".into(), Value::Number(Number::from(v))); }
+        if let Some(ref v) = self.ca { m.insert("ca".into(), v.as_str().into()); }
+        if let Some(ref v) = self.ca_str { m.insert("ca-str".into(), v.as_str().into()); }
+        if let Some(v) = self.cwnd { m.insert("cwnd".into(), Value::Number(Number::from(v))); }
+        if let Some(v) = self.hop_interval { m.insert("hop-interval".into(), Value::Number(Number::from(v))); }
         m
     }
 }
@@ -469,6 +588,25 @@ impl AnyTLSConfig {
     }
 }
 
+impl WireGuardConfig {
+    fn clash_mapping(&self) -> Mapping {
+        let mut m = Mapping::new();
+        m.insert("name".into(), self.name.as_str().into());
+        m.insert("server".into(), self.server.as_str().into());
+        m.insert("port".into(), Value::Number(Number::from(self.port)));
+        m.insert("type".into(), "wireguard".into());
+        m.insert("private-key".into(), self.private_key.as_str().into());
+        m.insert("public-key".into(), self.public_key.as_str().into());
+        m.insert("ip".into(), self.ip.as_str().into());
+        if let Some(ref v) = self.ipv6 { m.insert("ipv6".into(), v.as_str().into()); }
+        if let Some(ref v) = self.dns { m.insert("dns".into(), v.as_str().into()); }
+        if let Some(v) = self.mtu { m.insert("mtu".into(), Value::Number(Number::from(v))); }
+        if let Some(ref v) = self.preshared_key { m.insert("preshared-key".into(), v.as_str().into()); }
+        if let Some(v) = self.udp { m.insert("udp".into(), v.into()); }
+        m
+    }
+}
+
 // ── Enriched Proxy (carries latency + geo info through pipeline) ──────────
 
 #[derive(Debug, Clone)]
@@ -478,6 +616,9 @@ pub struct EnrichedProxy {
     pub country_code: String,
     pub country_name: String,
     pub emoji: String,
+    /// Source group index (1-based), matching subconverter's `!!GROUPID=` / `!!INSERT=` directive.
+    /// 0 means unassigned (e.g., crawled proxies without a domain source).
+    pub source_id: u32,
 }
 
 impl EnrichedProxy {
@@ -488,6 +629,18 @@ impl EnrichedProxy {
             country_code: String::new(),
             country_name: String::new(),
             emoji: String::new(),
+            source_id: 0,
+        }
+    }
+
+    pub fn with_source_id(node: ProxyNode, latency_ms: u64, source_id: u32) -> Self {
+        Self {
+            node,
+            latency_ms,
+            country_code: String::new(),
+            country_name: String::new(),
+            emoji: String::new(),
+            source_id,
         }
     }
 

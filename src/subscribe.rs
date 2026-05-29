@@ -20,6 +20,30 @@ fn is_likely_base64(s: &str) -> bool {
 }
 
 pub async fn fetch_subscription(url: &str, proxy: Option<&str>) -> Result<String> {
+    // Check persistent cache first
+    if let Some(cached) = crate::cache::get(crate::cache::CacheKind::Subscription, url) {
+        log::info!("Cache hit for subscription: {}", url);
+        return Ok(cached);
+    }
+
+    let result = fetch_http(url, proxy).await;
+
+    // On success, store in cache
+    if let Ok(ref data) = result {
+        crate::cache::set(crate::cache::CacheKind::Subscription, url, data);
+    }
+    // On failure, serve stale cache if configured
+    else if crate::cache::is_enabled()
+        && let Some(stale) = crate::cache::get_stale(crate::cache::CacheKind::Subscription, url) {
+            log::warn!("Subscription fetch failed, serving stale cache: {}", url);
+            return Ok(stale);
+        }
+
+    result
+}
+
+/// Raw HTTP fetch without caching
+async fn fetch_http(url: &str, proxy: Option<&str>) -> Result<String> {
     let mut builder = reqwest::Client::builder();
     if let Some(proxy_url) = proxy {
         let p = reqwest::Proxy::all(proxy_url)
@@ -38,6 +62,14 @@ pub async fn fetch_subscription(url: &str, proxy: Option<&str>) -> Result<String
     }
     let client = builder.build()?;
     let resp = client.get(url).send().await?;
+
+    // Capture Subscription-UserInfo header before consuming the response
+    if let Some(header) = resp.headers().get("subscription-userinfo")
+        && let Ok(val) = header.to_str()
+            && !val.is_empty() {
+                crate::userinfo::capture(url, val);
+            }
+
     Ok(resp.text().await?)
 }
 

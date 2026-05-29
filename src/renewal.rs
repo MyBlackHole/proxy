@@ -77,7 +77,10 @@ pub async fn login(client: &reqwest::Client, domain: &str, email: &str, passwd: 
                 let cookies = resp.headers().get("set-cookie")
                     .and_then(|v| v.to_str().ok())
                     .unwrap_or("").to_string();
-                let text = resp.text().await.unwrap_or_default();
+                let text = resp.text().await.unwrap_or_else(|e| {
+                    log::warn!("Failed to read login body {}: {}", url, e);
+                    String::new()
+                });
                 if status.is_success() {
                     let auth_data: serde_json::Value = serde_json::from_str(&text)
                         .unwrap_or(serde_json::Value::Null);
@@ -120,7 +123,7 @@ pub async fn get_subscribe_info(client: &reqwest::Client, domain: &str, cookies:
     let plan = info.get("plan");
     let renew_enable = plan.and_then(|p| p.get("renew")).and_then(|v| v.as_u64()).unwrap_or(0) == 1;
 
-    let now = chrono::Utc::now().timestamp() as u64;
+    let now = chrono::Utc::now().timestamp().max(0) as u64;
     let expire_days = if timestamp > now {
         ((timestamp - now) / 86400) as i64
     } else {
@@ -223,7 +226,10 @@ async fn fetch_order_trade_no(client: &reqwest::Client, url: &str, headers: &Has
         }
         match req.send().await {
             Ok(resp) => {
-                let text = resp.text().await.unwrap_or_default();
+                let text = resp.text().await.unwrap_or_else(|e| {
+                    log::warn!("Failed to read fetch_order_trade_no body {}: {}", url, e);
+                    String::new()
+                });
                 let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
                 if let Some(orders) = data.get("data").and_then(|v| v.as_array()) {
                     for order in orders {
@@ -254,7 +260,10 @@ pub async fn order_plan(client: &reqwest::Client, domain: &str, plan_id: usize, 
     if !resp.status().is_success() {
         return Ok(false);
     }
-    let text = resp.text().await.unwrap_or_default();
+    let text = resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read order_plan body {}: {}", url, e);
+        String::new()
+    });
     let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     Ok(data.get("data").is_some())
 }
@@ -271,7 +280,10 @@ pub async fn checkout(client: &reqwest::Client, domain: &str, order_id: usize, c
             params.insert("plan_id", order_id.to_string());
             params.insert("period", "month_price".to_string());
             let resp = post_form(client, &order_url, &params, &headers, false).await?;
-            let text = resp.text().await.unwrap_or_default();
+            let text = resp.text().await.unwrap_or_else(|e| {
+                log::warn!("Failed to read checkout order body {}: {}", order_url, e);
+                String::new()
+            });
             let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
             data.get("data").and_then(|v| v.as_str()).unwrap_or("").to_string()
         }
@@ -284,7 +296,10 @@ pub async fn checkout(client: &reqwest::Client, domain: &str, order_id: usize, c
     pay_params.insert("trade_no", trade_no);
     pay_params.insert("method", method.to_string());
     let resp = post_form(client, &pay_url, &pay_params, &headers, false).await?;
-    let text = resp.text().await.unwrap_or_default();
+    let text = resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read checkout pay body {}: {}", pay_url, e);
+        String::new()
+    });
     let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     Ok(data.get("data").and_then(|v| v.as_bool()).unwrap_or(false))
 }
@@ -312,7 +327,10 @@ pub async fn register_free_plan(
         params.insert("coupon_code", coupon.to_string());
     }
     let resp = post_form(client, &order_url, &params, &headers, false).await?;
-    let text = resp.text().await.unwrap_or_default();
+    let text = resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read order body in register_free_plan {}: {}", order_url, e);
+        String::new()
+    });
     let order_data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
     let trade_no = order_data.get("data").and_then(|v| v.as_str()).unwrap_or("").to_string();
 
@@ -330,7 +348,10 @@ pub async fn register_free_plan(
         sub_req = sub_req.header(k.as_str(), v.as_str());
     }
     let sub_resp = sub_req.send().await?;
-    let sub_text = sub_resp.text().await.unwrap_or_default();
+    let sub_text = sub_resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read subscribe body in register_free_plan {}: {}", sub_url, e);
+        String::new()
+    });
     let sub_data: serde_json::Value = serde_json::from_str(&sub_text).unwrap_or(serde_json::Value::Null);
     let subscribe_url = sub_data.get("data").and_then(|d| d.get("subscribe_url"))
         .and_then(|v| v.as_str())
@@ -355,7 +376,10 @@ async fn get_payment_methods(client: &reqwest::Client, domain: &str, cookies: &s
     }
     match req.send().await {
         Ok(r) => {
-            let text = r.text().await.unwrap_or_default();
+            let text = r.text().await.unwrap_or_else(|e| {
+                log::warn!("Failed to read payment methods body {}: {}", url, e);
+                String::new()
+            });
             let data: serde_json::Value = serde_json::from_str(&text).unwrap_or(serde_json::Value::Null);
             data.get("data").and_then(|v| v.as_array())
                 .map(|arr| arr.iter().filter_map(|item| item.get("id").and_then(|v| v.as_u64()).map(|id| id as usize)).collect())
@@ -379,10 +403,22 @@ pub async fn add_traffic_flow(
     use base64::Engine;
     use base64::engine::general_purpose;
 
-    let decoded_email = String::from_utf8(general_purpose::STANDARD.decode(email).map_err(|_| AppError::InvalidConfig("base64 decode email".to_string()))?)
-        .map_err(|_| AppError::InvalidConfig("invalid email utf8".to_string()))?;
-    let decoded_passwd = String::from_utf8(general_purpose::STANDARD.decode(passwd).map_err(|_| AppError::InvalidConfig("base64 decode passwd".to_string()))?)
-        .map_err(|_| AppError::InvalidConfig("invalid passwd utf8".to_string()))?;
+    let decoded_email = String::from_utf8(general_purpose::STANDARD.decode(email).map_err(|e| {
+        log::warn!("Failed to decode email: {}", e);
+        AppError::InvalidConfig("base64 decode email".to_string())
+    })?)
+        .map_err(|e| {
+            log::warn!("Failed to decode email UTF-8: {}", e);
+            AppError::InvalidConfig("invalid email utf8".to_string())
+        })?;
+    let decoded_passwd = String::from_utf8(general_purpose::STANDARD.decode(passwd).map_err(|e| {
+        log::warn!("Failed to decode passwd: {}", e);
+        AppError::InvalidConfig("base64 decode passwd".to_string())
+    })?)
+        .map_err(|e| {
+            log::warn!("Failed to decode passwd UTF-8: {}", e);
+            AppError::InvalidConfig("invalid passwd utf8".to_string())
+        })?;
 
     let (cookies, auth) = login(client, domain, &decoded_email, &decoded_passwd).await?;
 
@@ -443,7 +479,10 @@ pub async fn add_traffic_flow(
         sub_req = sub_req.header(k.as_str(), v.as_str());
     }
     let sub_resp = sub_req.send().await?;
-    let sub_text = sub_resp.text().await.unwrap_or_default();
+    let sub_text = sub_resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read subscribe body in add_traffic_flow {}: {}", sub_url, e);
+        String::new()
+    });
     let sub_data: serde_json::Value = serde_json::from_str(&sub_text).unwrap_or(serde_json::Value::Null);
     Ok(sub_data.get("data").and_then(|d| d.get("subscribe_url"))
         .and_then(|v| v.as_str())

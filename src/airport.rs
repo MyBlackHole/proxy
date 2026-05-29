@@ -72,7 +72,10 @@ pub async fn get_register_require(client: &reqwest::Client, domain: &str) -> Res
         let url = format!("{}{}guest/comm/config", domain, prefix);
         match client.get(&url).send().await {
             Ok(resp) => {
-                let text = resp.text().await.unwrap_or_default();
+                let text = resp.text().await.unwrap_or_else(|e| {
+                    log::warn!("Failed to read register config body {}: {}", url, e);
+                    String::new()
+                });
                 if text.starts_with('{') && text.ends_with('}')
                     && let Ok(data) = serde_json::from_str::<serde_json::Value>(&text)
                     && let Some(config) = data.get("data")
@@ -143,7 +146,10 @@ async fn post_form(client: &reqwest::Client, url: &str, params: &HashMap<&str, S
         req = req.form(&vec_params);
     }
     let resp = req.send().await?;
-    Ok(resp.text().await.unwrap_or_default())
+    Ok(resp.text().await.unwrap_or_else(|e| {
+        log::warn!("Failed to read post_form body {}: {}", url, e);
+        String::new()
+    }))
 }
 
 async fn send_email_verify(client: &reqwest::Client, url: &str, email: &str, api_prefix: &str, headers: &HashMap<String, String>) -> Result<bool> {
@@ -241,9 +247,15 @@ pub async fn auto_register(
     }
 
     let mailbox = mailtm::create_temp_mail("mailtm")
-        .map_err(|_| AppError::Storage("cannot create temp mail".to_string()))?;
+        .map_err(|e| {
+            log::warn!("Failed to create temp mail: {}", e);
+            AppError::Storage("cannot create temp mail".to_string())
+        })?;
     let account = mailbox.get_account().await
-        .map_err(|_| AppError::Storage("cannot get temp account".to_string()))?;
+        .map_err(|e| {
+            log::warn!("Failed to get temp account: {}", e);
+            AppError::Storage("cannot get temp account".to_string())
+        })?;
 
     let send_url = format!("{}{}passport/comm/sendEmailVerify", domain, rr.api_prefix);
     let headers = build_headers(domain, "");
@@ -254,7 +266,10 @@ pub async fn auto_register(
     }
 
     let code = mailbox.monitor_verification_code(&account, 120).await
-        .map_err(|_| AppError::Storage("no verification code received".to_string()))?;
+        .map_err(|e| {
+            log::warn!("Failed to receive verification code: {}", e);
+            AppError::Storage("no verification code received".to_string())
+        })?;
     let _ = mailbox.delete_account(&account).await;
 
     let url = format!("{}{}passport/auth/register", domain, rr.api_prefix);

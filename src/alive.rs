@@ -21,8 +21,14 @@ pub async fn latency_test(host: &str, port: u16, timeout_secs: u64) -> Result<(b
             let elapsed = start.elapsed().as_millis() as u64;
             Ok((true, elapsed))
         }
-        Ok(Err(_)) => Ok((false, 0)),
-        Err(_) => Ok((false, 0)),
+        Ok(Err(e)) => {
+            log::debug!("TCP connect to {} failed: {}", addr, e);
+            Ok((false, 0))
+        }
+        Err(_) => {
+            log::debug!("TCP connect to {} timed out after {}s", addr, timeout_secs);
+            Ok((false, 0))
+        }
     }
 }
 

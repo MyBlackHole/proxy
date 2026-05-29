@@ -28,11 +28,10 @@ pub fn find_validate_binary(custom: Option<&Path>) -> Result<PathBuf, ValidateRe
         if path.is_file() {
             return Ok(path.to_path_buf());
         }
-        if path.components().count() <= 1 && !path.as_os_str().is_empty() {
-            if let Ok(found) = which(path.to_str().unwrap_or("")) {
+        if path.components().count() <= 1 && !path.as_os_str().is_empty()
+            && let Ok(found) = which(path.to_str().unwrap_or("")) {
                 return Ok(found);
             }
-        }
     }
 
     for name in candidates {
@@ -58,11 +57,10 @@ fn which(name: &str) -> Result<PathBuf, std::io::Error> {
             #[cfg(unix)]
             {
                 use std::os::unix::fs::PermissionsExt;
-                if let Ok(meta) = std::fs::metadata(&candidate) {
-                    if meta.permissions().mode() & 0o111 != 0 {
+                if let Ok(meta) = std::fs::metadata(&candidate)
+                    && meta.permissions().mode() & 0o111 != 0 {
                         return Ok(candidate);
                     }
-                }
             }
             #[cfg(not(unix))]
             {

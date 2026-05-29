@@ -26,12 +26,22 @@ pub async fn crawl_github(
 
         let resp = match resp {
             Ok(r) if r.status().is_success() => r,
-            _ => continue,
+            Ok(r) => {
+                log::warn!("[crawl_github] non-success HTTP status {} on page {}", r.status(), page);
+                continue;
+            }
+            Err(e) => {
+                log::warn!("[crawl_github] HTTP request failed on page {}: {}", page, e);
+                continue;
+            }
         };
 
         let body: serde_json::Value = match resp.json().await {
             Ok(v) => v,
-            Err(_) => continue,
+            Err(e) => {
+                log::warn!("[crawl_github] failed to parse JSON response on page {}: {}", page, e);
+                continue;
+            }
         };
 
         if let Some(items) = body.get("items").and_then(|v| v.as_array()) {
@@ -215,9 +225,7 @@ pub async fn crawl_github_gists(
         "https://api.github.com/search/code?q={}+language:text&per_page=50&page=1",
         encoded
     );
-    let gist_url = format!(
-        "https://api.github.com/gists/public?per_page=50&page=1"
-    );
+    let gist_url = "https://api.github.com/gists/public?per_page=50&page=1".to_string();
 
     let mut results = Vec::new();
 
@@ -251,15 +259,13 @@ pub async fn crawl_github_gists(
                     if let Some(files) = gist.get("files").and_then(|v| v.as_object()) {
                         for (_name, file) in files {
                             if let Some(raw_url) = file.get("raw_url").and_then(|v| v.as_str()) {
-                                if raw_url.contains(".yaml") || raw_url.contains(".yml")
+                                if (raw_url.contains(".yaml") || raw_url.contains(".yml")
                                     || raw_url.contains(".txt") || raw_url.contains(".conf")
-                                    || raw_url.contains("config") || raw_url.contains("proxy")
-                                {
-                                    if let Ok(resp) = client.get(raw_url).send().await
+                                    || raw_url.contains("config") || raw_url.contains("proxy"))
+                                    && let Ok(resp) = client.get(raw_url).send().await
                                         && let Ok(text) = resp.text().await {
                                             results.extend(extract_subscribes(&text));
                                         }
-                                }
                             }
                         }
                     }
