@@ -708,8 +708,13 @@ pub struct GroupConfig {
     #[serde(default)]
     pub targets: HashMap<String, String>,
 
+    /// Enable GeoIP-based emoji in region group names (default: false)
     #[serde(default)]
     pub emoji: bool,
+
+    /// Strip existing emoji characters from proxy names before processing
+    #[serde(default)]
+    pub remove_old_emoji: bool,
 
     #[serde(default)]
     pub list: bool,
@@ -830,13 +835,25 @@ impl RulesetConfig {
 fn default_ruleset_interval() -> u64 { 86400 }
 
 /// Custom base template for Clash output
+///
+/// The template should be a valid Clash config defining ALL sections.
+/// Dynamic sections (`proxies`, `proxy-groups`, `rules`, `rule-providers`,
+/// `proxy-providers`) should use `~` (null) placeholders that will be
+/// overwritten by the generator. If not specified, the embedded default
+/// template (`base/clash_default.yml`) is used — it follows the same
+/// full-template design with null placeholders for dynamic content.
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct TemplateConfig {
     /// Path to a base Clash YAML template file
     ///
-    /// The template should be a valid Clash config without the `proxies`,
-    /// `proxy-groups`, `rules`, or `rule-providers` keys — those are injected
-    /// by the converter. If not specified, a hardcoded default header is used.
+    /// Supports two styles:
+    /// 1. **YAML injection** (recommended): Placeholder sections use `~`
+    ///    (null) — the generator overwrites them with produced content.
+    /// 2. **Text substitution** (subconverter-compat): Use `{{proxy}}`,
+    ///    `{{proxy_group}}`, `{{rule}}` markers in the raw text — the
+    ///    generator replaces them serialized YAML sections.
+    ///
+    /// If not specified, the built-in `base/clash_default.yml` is used.
     pub base: Option<String>,
 
     /// Maximum number of inline rules before auto-converting to rule-provider
@@ -1096,6 +1113,16 @@ pub struct SettingsConfig {
     #[serde(default = "default_true")]
     pub append_userinfo: bool,
 
+    // ── Global Node Filtering (applied to all groups, before per-group preprocess) ──
+
+    /// Global include filter: keep only proxies whose name matches this regex
+    #[serde(default)]
+    pub filter_include: String,
+
+    /// Global exclude filter: exclude proxies whose name matches this regex
+    #[serde(default)]
+    pub filter_exclude: String,
+
     // ── Cache ──
 
     /// Persistent cache configuration (TTL-based, file-backed)
@@ -1115,6 +1142,8 @@ impl Default for SettingsConfig {
             invisible: false,
             validate_binary: None,
             append_userinfo: true,
+            filter_include: String::new(),
+            filter_exclude: String::new(),
             cache: CacheSettings::default(),
         }
     }

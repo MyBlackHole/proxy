@@ -24,6 +24,88 @@ const DEPRECATED_CIPHERS: &[&str] = &[
 /// 3. regex rename rules
 /// 4. append_proxy_type prefix
 /// 5. sort
+/// Apply global include/exclude filter to proxies.
+/// Unlike PreprocessConfig's include/exclude, this is applied at the settings level
+/// before any per-group preprocessing.
+pub fn apply_global_filter(
+    proxies: Vec<EnrichedProxy>,
+    include_pattern: &str,
+    exclude_pattern: &str,
+) -> Vec<EnrichedProxy> {
+    let include_re = if include_pattern.is_empty() {
+        None
+    } else {
+        match Regex::new(include_pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                log::warn!("global filter: invalid include regex '{}': {}", include_pattern, e);
+                None
+            }
+        }
+    };
+
+    let exclude_re = if exclude_pattern.is_empty() {
+        None
+    } else {
+        match Regex::new(exclude_pattern) {
+            Ok(re) => Some(re),
+            Err(e) => {
+                log::warn!("global filter: invalid exclude regex '{}': {}", exclude_pattern, e);
+                None
+            }
+        }
+    };
+
+    proxies.into_iter().filter(|ep| {
+        let name = ep.node.name();
+        if let Some(ref re) = include_re && !re.is_match(name) {
+            return false;
+        }
+        if let Some(ref re) = exclude_re && re.is_match(name) {
+            return false;
+        }
+        true
+    }).collect()
+}
+
+/// Strip leading emoji characters from a proxy name.
+///
+/// Matches common emoji Unicode ranges (flags, pictographs, symbols) at the
+/// start of the string and removes them along with any following whitespace.
+pub fn strip_emoji_prefix(name: &str) -> String {
+    name.trim_start_matches(|c: char| {
+        let v = c as u32;
+        matches!(v,
+            // Regional indicators (flag pairs like 🇯🇵)
+            0x1F1E6..=0x1F1FF |
+            // Miscellaneous Symbols, Emoticons, Transport, Pictographs etc.
+            0x1F300..=0x1F9FF |
+            // Dingbats / Miscellaneous Symbols
+            0x2600..=0x27BF |
+            // Variation Selectors (emoji presentation)
+            0xFE00..=0xFE0F |
+            // Zero-width joiner (for compound emoji)
+            0x200D |
+            // Enclosed Alphanumerics / CJK symbols (keycaps, etc.)
+            0x20E3..=0x20E3 |
+            // Combining Enclosing Marks
+            0x20D0..=0x20FF |
+            // Enclosed Ideographic Supplement
+            0x1F200..=0x1F2FF)
+    })
+    .trim_start()
+    .to_string()
+}
+
+/// Remove old emoji from all proxy names in the list.
+pub fn remove_old_emoji_from_proxies(proxies: Vec<EnrichedProxy>) -> Vec<EnrichedProxy> {
+    proxies.into_iter().map(|mut ep| {
+        let new_name = strip_emoji_prefix(ep.node.name());
+        ep.node.set_name(new_name);
+        ep
+    }).collect()
+}
+
 pub fn preprocess_proxies(
     proxies: Vec<EnrichedProxy>,
     cfg: &PreprocessConfig,
@@ -482,5 +564,111 @@ mod tests {
         // Both sorted by name asc: "Trojan-..." (T) before "VMess-..." (V)
         assert_eq!(result[0].node.name(), "Trojan-🇺🇸 US 02");
         assert_eq!(result[1].node.name(), "VMess-🇺🇸 JP 01");
+    }
+
+    // ── Global Filter (Settings-level) ────────────────────────────────────
+
+    #[test]
+    fn test_global_filter_include_only() {
+        let proxies = vec![
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+            test_enriched("JP-01", make_vmess("JP-01"), 50, "JP"),
+            test_enriched("SG-01", make_vmess("SG-01"), 80, "SG"),
+        ];
+        let result = apply_global_filter(proxies, "^US", "");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].node.name(), "US-01");
+    }
+
+    #[test]
+    fn test_global_filter_exclude_only() {
+        let proxies = vec![
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+            test_enriched("JP-01", make_vmess("JP-01"), 50, "JP"),
+            test_enriched("SG-01", make_vmess("SG-01"), 80, "SG"),
+        ];
+        let result = apply_global_filter(proxies, "", "^US");
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|ep| !ep.node.name().starts_with("US")));
+    }
+
+    #[test]
+    fn test_global_filter_include_and_exclude() {
+        let proxies = vec![
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+            test_enriched("US-过期", make_vmess("US-过期"), 100, "US"),
+            test_enriched("JP-01", make_vmess("JP-01"), 50, "JP"),
+            test_enriched("SG-01", make_vmess("SG-01"), 80, "SG"),
+        ];
+        let result = apply_global_filter(proxies, "^US", "过期");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].node.name(), "US-01");
+    }
+
+    #[test]
+    fn test_global_filter_no_match_returns_empty() {
+        let proxies = vec![
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+        ];
+        let result = apply_global_filter(proxies, "^JP", "");
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_global_filter_empty_patterns_passthrough() {
+        let proxies = vec![
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+        ];
+        let result = apply_global_filter(proxies.clone(), "", "");
+        assert_eq!(result.len(), 1);
+    }
+
+    // ── Emoji Stripping ───────────────────────────────────────────────────
+
+    #[test]
+    fn test_strip_emoji_prefix_no_emoji() {
+        assert_eq!(strip_emoji_prefix("US-01"), "US-01");
+        assert_eq!(strip_emoji_prefix(""), "");
+        assert_eq!(strip_emoji_prefix("abc123"), "abc123");
+    }
+
+    #[test]
+    fn test_strip_emoji_prefix_flag_emoji() {
+        assert_eq!(strip_emoji_prefix("🇯🇵 JP-Tokyo"), "JP-Tokyo");
+        assert_eq!(strip_emoji_prefix("🇺🇸US-Node"), "US-Node");
+    }
+
+    #[test]
+    fn test_strip_emoji_prefix_misc_symbols() {
+        assert_eq!(strip_emoji_prefix("📡 Relay-01"), "Relay-01");
+        assert_eq!(strip_emoji_prefix("🎯 Direct"), "Direct");
+    }
+
+    #[test]
+    fn test_strip_emoji_prefix_multiple_emoji() {
+        assert_eq!(strip_emoji_prefix("🇯🇵🎯 JP-Direct"), "JP-Direct");
+    }
+
+    #[test]
+    fn test_remove_old_emoji_from_proxies_basic() {
+        let proxies = vec![
+            test_enriched("🇯🇵 JP-Tokyo", make_vmess("🇯🇵 JP-Tokyo"), 100, "JP"),
+            test_enriched("US-01", make_vmess("US-01"), 100, "US"),
+            test_enriched("🇺🇸🇺🇸 US-02", make_vmess("🇺🇸🇺🇸 US-02"), 100, "US"),
+        ];
+        let result = remove_old_emoji_from_proxies(proxies);
+        assert_eq!(result[0].node.name(), "JP-Tokyo");
+        assert_eq!(result[1].node.name(), "US-01");
+        assert_eq!(result[2].node.name(), "US-02");
+    }
+
+    #[test]
+    fn test_remove_old_emoji_from_proxies_all_emoji_clears() {
+        let proxies = vec![
+            test_enriched("😀😃😄", make_vmess("😀😃😄"), 100, "JP"),
+        ];
+        let result = remove_old_emoji_from_proxies(proxies);
+        // After stripping all emoji, name becomes empty
+        assert!(result[0].node.name().chars().all(|c| !c.is_ascii()));
     }
 }

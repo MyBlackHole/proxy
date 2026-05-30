@@ -78,7 +78,7 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
 
     // 7. Per-group processing (with smart/legacy converter)
     for (name, group) in &config.groups {
-        process_group_smart(&client, group, &all_enriched, &storage, config.settings.append_userinfo).await?;
+        process_group_smart(&client, group, &all_enriched, &storage, config.settings.append_userinfo, Some(&config.settings)).await?;
         log::info!("Group {} processed", name);
     }
 
@@ -681,15 +681,25 @@ async fn process_group_smart(
     all_enriched: &[EnrichedProxy],
     storage: &HashMap<String, Box<dyn StorageBackend>>,
     append_userinfo: bool,
+    settings: Option<&SettingsConfig>,
 ) -> Result<()> {
-    let enriched = if let Some(ref reg) = group.regularize {
-        if reg.enable {
-            log::info!(
-                "Applying GeoIP regularize for group with locate={}, residential={}",
-                reg.locate,
-                reg.residential
+    // Step 0a: Apply global include/exclude filter (from settings)
+    let enriched = if let Some(s) = settings {
+        let has_filter = !s.filter_include.is_empty() || !s.filter_exclude.is_empty();
+        if has_filter {
+            let before = all_enriched.len();
+            let filtered = preprocess::apply_global_filter(
+                all_enriched.to_vec(),
+                &s.filter_include,
+                &s.filter_exclude,
             );
-            geoip::regularize_enriched_proxies(client, all_enriched.to_vec(), reg).await?
+            log::info!(
+                "Global filter: {} → {} proxies ({} removed)",
+                before,
+                filtered.len(),
+                before - filtered.len()
+            );
+            filtered
         } else {
             all_enriched.to_vec()
         }
@@ -697,7 +707,43 @@ async fn process_group_smart(
         all_enriched.to_vec()
     };
 
-    // Apply pre-processing pipeline (rename, filter, sort, etc.)
+    // Step 0b: Remove old emoji from proxy names if configured
+    let enriched = if group.remove_old_emoji {
+        let before = enriched.len();
+        let cleaned = preprocess::remove_old_emoji_from_proxies(enriched);
+        log::info!("Removed old emoji from {} proxies", before);
+        cleaned
+    } else {
+        enriched
+    };
+
+    // Step 1: GeoIP regularize
+    let enriched = if let Some(ref reg) = group.regularize {
+        if reg.enable {
+            log::info!(
+                "Applying GeoIP regularize for group with locate={}, residential={}",
+                reg.locate,
+                reg.residential
+            );
+            geoip::regularize_enriched_proxies(client, enriched, reg).await?
+        } else {
+            enriched
+        }
+    } else {
+        enriched
+    };
+
+    // Step 1b: Strip GeoIP emoji from proxies when group.emoji is disabled
+    let enriched: Vec<EnrichedProxy> = if !group.emoji {
+        enriched.into_iter().map(|mut ep| {
+            ep.emoji.clear();
+            ep
+        }).collect()
+    } else {
+        enriched
+    };
+
+    // Step 2: Apply per-group pre-processing pipeline (rename, filter, sort, etc.)
     let enriched = if let Some(ref pp) = group.preprocess {
         log::info!("Applying pre-processing pipeline to {} proxies", enriched.len());
         preprocess::preprocess_proxies(enriched, pp)
@@ -822,6 +868,7 @@ pub async fn check_alive_only(config_path: &str) -> Result<()> {
             &all_enriched,
             &storage,
             config.settings.append_userinfo,
+            Some(&config.settings),
         )
         .await?;
         log::info!("Group {} processed", name);

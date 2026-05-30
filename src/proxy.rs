@@ -119,6 +119,33 @@ impl ProxyNode {
             ProxyNode::WireGuard(c) => c.clash_mapping(),
         }
     }
+
+    /// Human-readable protocol type label.
+    pub fn proxy_type(&self) -> &'static str {
+        match self {
+            ProxyNode::Shadowsocks(_) => "ss",
+            ProxyNode::ShadowsocksR(_) => "ssr",
+            ProxyNode::VMess(_) => "vmess",
+            ProxyNode::Trojan(_) => "trojan",
+            ProxyNode::VLESS(_) => "vless",
+            ProxyNode::Hysteria(_) => "hysteria",
+            ProxyNode::Hysteria2(_) => "hysteria2",
+            ProxyNode::Tuic(_) => "tuic",
+            ProxyNode::Snell(_) => "snell",
+            ProxyNode::Http(_) => "http",
+            ProxyNode::Socks5(_) => "socks5",
+            ProxyNode::AnyTLS(_) => "anytls",
+            ProxyNode::WireGuard(_) => "wireguard",
+        }
+    }
+
+    /// Whether this proxy type can be verified via TCP connect.
+    ///
+    /// UDP-only protocols (WireGuard) return `false` because a TCP
+    /// handshake will always fail for a healthy server.
+    pub fn supports_tcp_check(&self) -> bool {
+        !matches!(self, ProxyNode::WireGuard(_))
+    }
 }
 
 macro_rules! proxy_fields {

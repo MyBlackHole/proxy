@@ -100,9 +100,12 @@ pub async fn build_clash_config(
     }
 
     // Smart groups (region-based)
+    //
+    // Always build smart groups when smart is enabled, even when custom groups exist.
+    // Custom groups use `[]` directives (e.g. `[]香港 Auto`) to reference smart auto-groups,
+    // so those groups must be present in the output regardless of custom group mode.
     if let Some(smart) = cfg.smart
-        && smart.enable && cfg.custom_groups.is_empty() {
-            // Only build smart groups when no custom groups defined
+        && smart.enable {
             build_smart_groups(smart, cfg.enriched, &mut groups, &mut auto_group_names, cfg.test_url);
         }
 
@@ -301,7 +304,13 @@ pub async fn build_clash_config(
 
 // ── Base Template Loading ──────────────────────────────────────────────────
 
-/// Load the base template YAML, or use the default header
+/// Load the base template YAML, or use the default clash template.
+///
+/// Legacy field names (`Proxy`, `Proxy Group`, `Rule`) are stripped — they
+/// are not used by the generator. All modern field names (`proxies`,
+/// `proxy-groups`, `rules`, `rule-providers`, `proxy-providers`) are
+/// preserved as placeholders and will be overwritten by the generated content
+/// in the caller's YAML-injection path.
 fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::Mapping> {
     if let Some(t) = template
         && let Some(path) = &t.base {
@@ -311,14 +320,14 @@ fn load_base_template(template: Option<&TemplateConfig>) -> Result<serde_yaml::M
                 let value: Value = serde_yaml::from_str(&content)?;
                 if let Some(m) = value.as_mapping() {
                     let mut base = m.clone();
+                    // Strip only legacy name variants — the generator does not
+                    // produce these keys, so they would pollute the output.
                     base.remove("Proxy");
-                    base.remove("proxies");
                     base.remove("Proxy Group");
-                    base.remove("proxy-groups");
                     base.remove("Rule");
-                    base.remove("rules");
-                    base.remove("rule-providers");
-                    base.remove("proxy-providers");
+                    // Modern keys (proxies, proxy-groups, rules, etc.) are kept
+                    // as template placeholders. The caller's `base.insert(...)`
+                    // calls will overwrite them with generated content.
                     return Ok(base);
                 }
                 return Err(AppError::InvalidConfig("Template must be a YAML mapping".into()));
@@ -861,6 +870,22 @@ mod tests {
         let base = load_base_template(None).unwrap();
         assert!(base.contains_key("port"));
         assert!(base.contains_key("mode"));
+        // Full template should include all dynamic sections as null placeholders
+        assert!(base.contains_key("proxies"), "default template must include proxies placeholder");
+        assert!(base.contains_key("proxy-groups"), "default template must include proxy-groups placeholder");
+        assert!(base.contains_key("rules"), "default template must include rules placeholder");
+        assert!(base.contains_key("proxy-providers"), "default template must include proxy-providers placeholder");
+        assert!(base.contains_key("rule-providers"), "default template must include rule-providers placeholder");
+        // Placeholders must be null (will be overwritten by generated content)
+        assert!(base.get("proxies").unwrap().is_null(), "proxies placeholder must be null (~)");
+        assert!(base.get("proxy-groups").unwrap().is_null(), "proxy-groups placeholder must be null (~)");
+        assert!(base.get("rules").unwrap().is_null(), "rules placeholder must be null (~)");
+        // Meta fields must NOT be present (they're commented-out in the template)
+        assert!(!base.contains_key("mixed-port"), "commented-out key mixed-port must not appear");
+        assert!(!base.contains_key("ipv6"), "commented-out key ipv6 must not appear");
+        assert!(!base.contains_key("tun"), "commented-out key tun must not appear");
+        // DNS must be present
+        assert!(base.contains_key("dns"), "default template must include dns");
     }
 
     #[test]
@@ -874,6 +899,70 @@ mod tests {
             header.get("mode").unwrap().as_str().unwrap(),
             "rule"
         );
+        // Same full-template contract must hold
+        assert!(header.contains_key("proxies"));
+        assert!(header.contains_key("proxy-groups"));
+        assert!(header.contains_key("rules"));
+    }
+
+    /// Verify that YAML injection correctly overwrites template placeholders.
+    /// This simulates what `build_clash_config` does: load template, insert
+    /// generated sections, verify the result is valid YAML with our content.
+    #[test]
+    fn test_template_placeholder_overwrite() {
+        // Load default template (has null placeholders)
+        let mut base = load_base_template(None).unwrap();
+
+        // Insert generated content (simulating what build_clash_config does)
+        let proxy_entries: Vec<Value> = vec![
+            Value::Mapping(serde_yaml::Mapping::from_iter([
+                ("name".into(), "🇺🇸 US-01".into()),
+                ("type".into(), "vmess".into()),
+                ("server".into(), "1.2.3.4".into()),
+                ("port".into(), Value::Number(serde_yaml::Number::from(443u16))),
+                ("uuid".into(), "abc-123".into()),
+            ])),
+        ];
+        let group_entries: Vec<Value> = vec![
+            Value::Mapping(serde_yaml::Mapping::from_iter([
+                ("name".into(), "Proxy".into()),
+                ("type".into(), "select".into()),
+                ("proxies".into(), Value::Sequence(vec!["🇺🇸 US-01".into()])),
+            ])),
+        ];
+        let rule_values: Vec<Value> = vec!["MATCH,Proxy".into()];
+
+        base.insert("proxies".into(), Value::Sequence(proxy_entries.clone()));
+        base.insert("proxy-groups".into(), Value::Sequence(group_entries.clone()));
+        base.insert("rules".into(), Value::Sequence(rule_values.clone()));
+
+        // Verify overwrite: not null anymore
+        let proxies = base.get("proxies").unwrap().as_sequence().unwrap();
+        assert_eq!(proxies.len(), 1);
+        assert_eq!(proxies[0].as_mapping().unwrap().get("name").unwrap().as_str().unwrap(), "🇺🇸 US-01");
+
+        let groups = base.get("proxy-groups").unwrap().as_sequence().unwrap();
+        assert_eq!(groups.len(), 1);
+        assert_eq!(groups[0].as_mapping().unwrap().get("name").unwrap().as_str().unwrap(), "Proxy");
+
+        let rules = base.get("rules").unwrap().as_sequence().unwrap();
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].as_str().unwrap(), "MATCH,Proxy");
+
+        // Header fields must still be intact
+        assert_eq!(base.get("port").unwrap().as_i64().unwrap(), 7890);
+        let dns = base.get("dns").unwrap().as_mapping().unwrap();
+        assert!(dns.contains_key("enable"));
+
+        // Serialize and re-parse to verify valid YAML
+        let yaml_str = serde_yaml::to_string(&Value::Mapping(base)).unwrap();
+        let reparsed: serde_yaml::Value = serde_yaml::from_str(&yaml_str).unwrap();
+        let map = reparsed.as_mapping().unwrap();
+        assert!(map.contains_key("proxies"));
+        assert!(map.contains_key("proxy-groups"));
+        assert!(map.contains_key("rules"));
+        assert!(map.contains_key("dns"));
+        assert!(map.contains_key("experimental"));
     }
 
     #[test]

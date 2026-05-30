@@ -49,14 +49,13 @@ const DEFAULT_TEST_URL: &str = "https://www.gstatic.com/generate_204";
 /// Top-level Clash config header keys shared by all output modes.
 /// Aligned with subconverter's standard (GeneralClashConfig.yml / simple_base.yml).
 pub(crate) fn default_clash_header() -> serde_yaml::Mapping {
-    let mut config = serde_yaml::Mapping::new();
-    config.insert("port".into(), 7890.into());
-    config.insert("socks-port".into(), 7891.into());
-    config.insert("allow-lan".into(), true.into());
-    config.insert("mode".into(), "rule".into());
-    config.insert("log-level".into(), "info".into());
-    config.insert("external-controller".into(), "127.0.0.1:9090".into());
-    config
+    let yaml_str = include_str!("../base/clash_default.yml");
+    let value: serde_yaml::Value =
+        serde_yaml::from_str(yaml_str).expect("Built-in Clash template base/clash_default.yml is invalid");
+    value
+        .as_mapping()
+        .expect("Built-in Clash template base/clash_default.yml must be a mapping")
+        .clone()
 }
 
 // ── Build Single Proxy Entry ────────────────────────────────────────────────
@@ -670,7 +669,16 @@ mod tests {
         assert!(header.contains_key(ck("mode")));
         assert!(header.contains_key(ck("log-level")));
         assert!(header.contains_key(ck("external-controller")));
-        // Subconverter does not include Meta-specific fields in the base header
+        // Enhanced default includes DNS and experimental sections
+        assert!(
+            header.contains_key(ck("dns")),
+            "default_clash_header should include dns section"
+        );
+        assert!(
+            header.contains_key(ck("experimental")),
+            "default_clash_header should include experimental section"
+        );
+        // Meta-specific fields should still be absent from the standard default
         assert!(!header.contains_key(ck("mixed-port")));
         assert!(!header.contains_key(ck("ipv6")));
         assert!(!header.contains_key(ck("unified-delay")));

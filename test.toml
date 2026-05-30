@@ -79,7 +79,7 @@ exclude = ""
 enable = true
 pages = 10                                # 每个频道/群组翻页数
 search_enable = true                      # 关键词搜索开关
-search_query = "免费节点 订阅 ss:// trojan:// vmess://"  # 搜索关键词
+search_query = "免费节点 订阅 ss:// trojan:// vmess:// clash"  # 搜索关键词
 search_pages = 5                          # 搜索结果翻页数
 exclude = ""                              # 排除匹配
 history_depth = 3                         # 频道历史消息深度（翻页数）
@@ -303,6 +303,7 @@ push_to = ["free"]
 
 [groups.free]                             # 组名（与 domain/crawl 中的 push_to 对应）
 emoji = true                              # 节点名前添加 emoji 国旗
+remove_old_emoji = false                  # 移除节点名中旧 emoji 前缀（GeoIP 之前执行）
 list = true                               # 生成节点列表
 
 [groups.free.targets]                     # 输出目标（一个组可输出到多个文件）
@@ -368,6 +369,23 @@ group = "DIRECT"
 url = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.ini"
 interval = 86400
 
+# 内置规则集文件（从 base/rules/ 加载，使用绝对或相对路径）
+[[groups.free.rulesets]]
+group = "Proxy"
+url = "base/rules/ProxyGFWlist.list"
+
+[[groups.free.rulesets]]
+group = "DIRECT"
+url = "base/rules/ChinaDomain.list"
+
+[[groups.free.rulesets]]
+group = "DIRECT"
+url = "base/rules/ChinaIp.list"
+
+# [[groups.free.rulesets]]
+# group = "REJECT"
+# url = "base/rules/BanAD.list"
+
 # ── 模板覆盖 ──
 # [groups.free.template]
 # base = "templates/base.yaml"            # 自定义基础 YAML 模板路径
@@ -392,7 +410,7 @@ folderid = "/tmp/proxy-test"
 # ── 5. 全局设置 (Settings) ──────────────────────────────────────────────────
 
 [settings]
-socks_proxy = "socks5://127.0.0.1:1081"  # SOCKS5 代理（Telegram/Google/Yandex/Twitter 需要）
+socks_proxy = "http://127.0.0.1:1081"  # SOCKS5 代理（Telegram/Google/Yandex/Twitter 需要）
 concurrency = 64                          # 并发数
 timeout = 30000                           # 超时（毫秒）
 retry = 3                                 # 重试次数
@@ -400,3 +418,5 @@ test_url = "https://www.gstatic.com/generate_204"  # 连通性测试 URL
 overwrite = false                         # 是否覆盖已缓存节点
 invisible = false                         # 安静模式
 validate_binary = ""                      # Mihomo/Clash-Meta 二进制路径（用于配置校验）
+filter_include = ""                       # 全局节点包含过滤（正则，对所有组生效）
+filter_exclude = ""                       # 全局节点排除过滤（正则，对所有组生效）
