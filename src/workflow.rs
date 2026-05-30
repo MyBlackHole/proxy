@@ -105,6 +105,9 @@ async fn crawl_and_discover(
             Err(e) => log::warn!("Airport {} auto-register skipped: {}", domain.name, e),
         }
     }
+    // Dedup crawler + airport URLs to avoid fetching the same URL twice
+    urls.sort();
+    urls.dedup();
     Ok(urls)
 }
 
@@ -185,9 +188,13 @@ async fn process_crawled_proxies(
         http_urls.push(url.clone());
     }
 
+    // Dedup HTTP URLs to avoid duplicate fetches
+    http_urls.sort();
+    http_urls.dedup();
+
     // Concurrently fetch HTTP subscription URLs using shared client (no proxy)
     if !http_urls.is_empty() {
-        log::info!("Concurrently fetching {} HTTP subscription URLs", http_urls.len());
+        log::info!("Concurrently fetching {} unique HTTP subscription URLs", http_urls.len());
         let semaphore = Arc::new(Semaphore::new(settings.concurrency));
         let mut handles = Vec::with_capacity(http_urls.len());
 
