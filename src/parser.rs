@@ -39,6 +39,8 @@ pub fn parse_proxy_url(input: &str) -> Result<ProxyNode> {
         parse_socks5(input)
     } else if input.starts_with("anytls://") {
         parse_anytls(input)
+    } else if input.starts_with("wireguard://") {
+        parse_wireguard(input)
     } else {
         Err(AppError::InvalidProxy(format!(
             "unsupported protocol: {}",
@@ -917,6 +919,44 @@ pub fn parse_anytls(raw_url: &str) -> Result<ProxyNode> {
         sni,
         skip_cert_verify,
         alpn,
+    }))
+}
+
+pub fn parse_wireguard(raw_url: &str) -> Result<ProxyNode> {
+    let url = Url::parse(raw_url)
+        .map_err(|e| AppError::InvalidProxy(format!("wireguard: invalid url: {}", e)))?;
+    let host = url
+        .host_str()
+        .ok_or_else(|| AppError::InvalidProxy("wireguard: missing host".into()))?;
+    let port = url
+        .port()
+        .ok_or_else(|| AppError::InvalidProxy("wireguard: missing port".into()))?;
+
+    let params = parse_query_params(&url);
+    let name = extract_name_from_url(&url).unwrap_or_else(|| default_name(host, port, "wireguard"));
+    let name = name.replace('+', " ");
+
+    let private_key = params.get("private_key").cloned().unwrap_or_default();
+    let public_key = params.get("public_key").cloned().unwrap_or_default();
+    let ip = params.get("ip").cloned().unwrap_or_default();
+    let ipv6 = params.get("ipv6").or(params.get("self_ipv6")).cloned();
+    let dns = params.get("dns").cloned();
+    let mtu = params.get("mtu").and_then(|s| s.parse::<u32>().ok());
+    let preshared_key = params.get("preshared_key").cloned();
+    let udp = params.get("udp").map(|s| s == "true" || s == "1");
+
+    Ok(ProxyNode::WireGuard(WireGuardConfig {
+        name,
+        server: host.to_string(),
+        port,
+        private_key,
+        public_key,
+        ip,
+        ipv6,
+        dns,
+        mtu,
+        preshared_key,
+        udp,
     }))
 }
 

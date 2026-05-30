@@ -26,6 +26,8 @@ mod google;
 mod yandex;
 mod twitter;
 mod pages;
+mod reddit;
+mod proxy_api;
 
 pub use client::build_crawl_client;
 pub use extract::extract_subscribes;
@@ -39,6 +41,8 @@ pub use google::*;
 pub use yandex::*;
 pub use twitter::*;
 pub use pages::*;
+pub use reddit::*;
+pub use proxy_api::*;
 
 use crate::config::PageCrawlConfig;
 use crate::error::*;

@@ -185,6 +185,14 @@ pub struct CrawlConfig {
     #[serde(default = "default_proxy_sites")]
     pub proxy_sites: Vec<ProxySiteConfig>,
 
+    /// Reddit proxy subreddit crawling
+    #[serde(default)]
+    pub reddit: RedditCrawlConfig,
+
+    /// Proxy disclosure API crawling
+    #[serde(default = "default_proxy_api")]
+    pub proxy_api: ProxyApiCrawlConfig,
+
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
 }
@@ -207,6 +215,8 @@ impl Default for CrawlConfig {
             discord: DiscordCrawlConfig::default(),
             rss: RssCrawlConfig::default(),
             proxy_sites: default_proxy_sites(),
+            reddit: RedditCrawlConfig::default(),
+            proxy_api: ProxyApiCrawlConfig::default(),
             pages: Vec::new(),
         }
     }
@@ -274,6 +284,70 @@ fn default_proxy_sites() -> Vec<ProxySiteConfig> {
 }
 
 fn default_threshold() -> usize { 5 }
+
+// ── New Source: Reddit ────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct RedditCrawlConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    /// Subreddits to crawl for proxy links
+    #[serde(default = "default_reddit_subreddits")]
+    pub subreddits: Vec<String>,
+
+    /// Max posts to fetch per subreddit
+    #[serde(default = "default_reddit_limit")]
+    pub limit: usize,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
+
+impl Default for RedditCrawlConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            subreddits: default_reddit_subreddits(),
+            limit: 50,
+            push_to: Vec::new(),
+        }
+    }
+}
+
+fn default_reddit_subreddits() -> Vec<String> {
+    vec![
+        "proxies".into(),
+        "proxyv6".into(),
+        "freeproxies".into(),
+    ]
+}
+
+fn default_reddit_limit() -> usize { 50 }
+
+// ── New Source: Proxy Disclosure APIs ─────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct ProxyApiCrawlConfig {
+    #[serde(default = "default_true")]
+    pub enable: bool,
+
+    #[serde(default)]
+    pub push_to: Vec<String>,
+}
+
+impl Default for ProxyApiCrawlConfig {
+    fn default() -> Self {
+        Self {
+            enable: true,
+            push_to: Vec::new(),
+        }
+    }
+}
+
+fn default_proxy_api() -> ProxyApiCrawlConfig {
+    ProxyApiCrawlConfig::default()
+}
 
 // ── New Source: Discord ───────────────────────────────────────────────────
 

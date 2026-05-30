@@ -1,4 +1,5 @@
 use regex::Regex;
+use std::collections::HashSet;
 
 /// Extract proxy subscription URLs and raw proxy lines from arbitrary text.
 ///
@@ -12,6 +13,7 @@ use regex::Regex;
 /// - Base64-encoded subscription data
 /// - Raw proxy lines (IP:PORT)
 pub fn extract_subscribes(content: &str) -> Vec<String> {
+    let mut seen: HashSet<String> = HashSet::new();
     let mut results: Vec<String> = Vec::new();
 
     let patterns = [
@@ -24,7 +26,7 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
         // Generic subscribe keyword in URL
         r#"https?://[^\s"\'<>]+(?:subscribe|subscription|sub\?)[^\s"\'<>]{8,}"#,
         // Direct proxy links (all supported protocols)
-        r"(?:vmess|trojan|ss|ssr|snell|hysteria2?|vless|tuic|anytls|socks5|http|https?)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}",
+        r"(?:vmess|trojan|ss|ssr|snell|hysteria2?|vless|tuic|anytls|socks5|http|https?|wireguard)://[a-zA-Z0-9:.?+=@%&#_\-/]{10,}",
         // Common proxy panel admin/subscribe paths (SSPanel, v2board, Proxypanel, etc.)
         r"https?://(?:[a-zA-Z0-9\-]+\.)+[a-zA-Z0-9\-]+(?::\d+)?/(?:admin/)?(?:api/v1/pay|api/v1/user|api/v1/server|api/v1/guest|api/v1/plan|api/v1/order|api/v1/ticket)\S*",
         // subscribe URL patterns with shorter tokens (8+ chars)
@@ -39,7 +41,7 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
         if let Ok(re) = Regex::new(pattern) {
             for m in re.find_iter(content) {
                 let s = m.as_str().trim().to_string();
-                if !results.contains(&s) {
+                if seen.insert(s.clone()) {
                     results.push(s);
                 }
             }
@@ -51,7 +53,7 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
         for cap in re.captures_iter(content) {
             if let Some(url_match) = cap.get(1) {
                 let s = url_match.as_str().trim().to_string();
-                if !results.contains(&s) {
+                if seen.insert(s.clone()) {
                     results.push(s);
                 }
             }
@@ -60,7 +62,7 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
 
     // Raw proxy lines (IP:PORT format)
     if let Ok(re) = Regex::new(
-        r"(?m)^\s*(?:(?:socks5|http|https|socks4|socks4a)://)?\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}:\d{2,5}\s*$",
+        r"(?m)^\s*(?:(?:socks5|http|https|socks4|socks4a)://)?(?:\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}|\[[\da-fA-F:]+]):\d{2,5}\s*$",
     ) {
         for m in re.find_iter(content) {
             let s = m.as_str().trim().to_string();
@@ -77,7 +79,7 @@ pub fn extract_subscribes(content: &str) -> Vec<String> {
             if let Ok(decoded) = base64::Engine::decode(&base64::engine::general_purpose::STANDARD, s.as_bytes())
                 && let Ok(text) = String::from_utf8(decoded)
                     && text.contains("://") && text.len() > 40
-                        && !results.contains(&s) {
+                        && seen.insert(s.clone()) {
                             results.push(s);
                         }
         }

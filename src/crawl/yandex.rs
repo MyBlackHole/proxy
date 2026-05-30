@@ -1,11 +1,20 @@
 use std::sync::Arc;
+use std::time::Duration;
 
+use rand::Rng;
 use regex::Regex;
 use tokio::sync::Semaphore;
 
 use crate::error::*;
 
 use super::extract_subscribes;
+
+const USER_AGENTS: &[&str] = &[
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:121.0) Gecko/20100101 Firefox/121.0",
+];
 
 pub async fn crawl_yandex(
     client: &reqwest::Client,
@@ -39,21 +48,51 @@ pub async fn crawl_yandex(
         let base_url = base_url.clone();
         let re = re.clone();
 
+        // Pre-generate random values outside async block (ThreadRng is !Send)
+        let delays: [u64; 3] = [
+            rand::thread_rng().gen_range(100..300),
+            rand::thread_rng().gen_range(100..300),
+            rand::thread_rng().gen_range(100..300),
+        ];
+        let uas: [&str; 3] = [
+            USER_AGENTS[rand::thread_rng().gen_range(0..USER_AGENTS.len())],
+            USER_AGENTS[rand::thread_rng().gen_range(0..USER_AGENTS.len())],
+            USER_AGENTS[rand::thread_rng().gen_range(0..USER_AGENTS.len())],
+        ];
+
         handles.push(tokio::spawn(async move {
             let _guard = permit;
             let url = format!("{}&p={}", base_url, page);
             log::debug!("[crawl_yandex] GET search page {}: {}", page, url);
 
             let mut page_results = Vec::new();
-            if let Ok(resp) = client
-                .get(&url)
-                .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
-                .header(
-                    "User-Agent",
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-                )
-                .send()
-                .await
+
+            let mut resp_opt = None;
+            for attempt in 1..=3 {
+                if attempt > 1 {
+                    tokio::time::sleep(Duration::from_secs(1)).await;
+                }
+
+                tokio::time::sleep(Duration::from_millis(delays[attempt - 1])).await;
+
+                if let Ok(resp) = client
+                    .get(&url)
+                    .header("Accept-Language", "zh-CN,zh;q=0.9,en;q=0.8")
+                    .header("User-Agent", uas[attempt - 1])
+                    .send()
+                    .await
+                {
+                    resp_opt = Some(resp);
+                    break;
+                }
+                log::warn!(
+                    "[crawl_yandex] attempt {}/3 failed for page={}",
+                    attempt,
+                    page
+                );
+            }
+
+            if let Some(resp) = resp_opt
                 && let Ok(text) = resp.text().await {
                     for m in re.find_iter(&text) {
                         let s = m

@@ -504,6 +504,22 @@ async fn run_crawlers(
         });
     }
 
+    // ── Reddit ──
+    if crawl_cfg.reddit.enable {
+        let subreddits = crawl_cfg.reddit.subreddits.clone();
+        let limit = crawl_cfg.reddit.limit;
+        spawn_crawler(&mut handles, &client, "Reddit", move |client| async move {
+            crawl::crawl_reddit(&client, &subreddits, limit).await
+        });
+    }
+
+    // ── Proxy APIs ──
+    if crawl_cfg.proxy_api.enable {
+        spawn_crawler(&mut handles, &client, "Proxy API", move |client| async move {
+            crawl::crawl_proxy_apis(&client).await
+        });
+    }
+
     // ── RSS ──
     if crawl_cfg.rss.enable {
         let rss_cfg = crawl_cfg.rss.clone();
