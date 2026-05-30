@@ -488,6 +488,10 @@ async fn run_crawlers(
     }
 
     // ── Proxy aggregation sites ──
+    {
+        let enabled_count = crawl_cfg.proxy_sites.iter().filter(|s| s.enable).count();
+        log::info!("Crawling {} proxy aggregation sites", enabled_count);
+    }
     for site in &crawl_cfg.proxy_sites {
         if !site.enable { continue; }
         let site_cfg = site.clone();
