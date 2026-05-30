@@ -286,24 +286,3 @@ pub async fn auto_register(
     Ok(format!("{}/api/v1/client/subscribe?token={}", domain, token))
 }
 
-pub async fn fetch_subscribe(_client: &reqwest::Client, url: &str, proxy: Option<&str>) -> Result<String> {
-    let mut builder = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(120));
-    if let Some(proxy_url) = proxy {
-        let p = reqwest::Proxy::all(proxy_url)
-            .map_err(|e| AppError::InvalidProxy(e.to_string()))?;
-        builder = builder.proxy(p);
-    }
-    let cli = builder.build().map_err(|e| AppError::InvalidConfig(e.to_string()))?;
-    let resp = cli.get(url)
-        .header("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36; Clash.Meta; Mihomo; Shadowrocket")
-        .send()
-        .await?;
-    let text = resp.text().await?;
-    if text.starts_with('{') && text.ends_with('}')
-        && let Ok(val) = serde_json::from_str::<serde_json::Value>(&text)
-            && val.get("outbounds").is_none() {
-                return Err(AppError::InvalidConfig("invalid subscription response".to_string()));
-            }
-    Ok(text)
-}

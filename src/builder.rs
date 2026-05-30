@@ -35,7 +35,10 @@ pub struct ClashGenerationConfig<'a> {
 fn serialize_yaml_section(key: &str, value: &Value) -> String {
     let mut map = serde_yaml::Mapping::new();
     map.insert(Value::String(key.into()), value.clone());
-    serde_yaml::to_string(&Value::Mapping(map)).unwrap_or_default()
+    serde_yaml::to_string(&Value::Mapping(map)).unwrap_or_else(|e| {
+        log::error!("Failed to serialize YAML section '{}': {}", key, e);
+        String::new()
+    })
 }
 
 /// Substitute subconverter-style template variables (`{{...}}`) in the template text
@@ -92,22 +95,29 @@ pub async fn build_clash_config(
     // 2. Build proxy groups
     let mut groups: Vec<Value> = Vec::new();
     let mut auto_group_names: Vec<String> = Vec::new();
-
-    // Custom groups (if defined) are the primary grouping mechanism
     let mut custom_group_names: Vec<String> = Vec::new();
-    if !cfg.custom_groups.is_empty() {
-        build_custom_groups(cfg.custom_groups, &all_names, cfg.enriched, &mut groups, &mut custom_group_names, cfg.test_url);
-    }
 
-    // Smart groups (region-based)
-    //
-    // Always build smart groups when smart is enabled, even when custom groups exist.
-    // Custom groups use `[]` directives (e.g. `[]香港 Auto`) to reference smart auto-groups,
-    // so those groups must be present in the output regardless of custom group mode.
+    // Smart groups (region-based) FIRST — custom groups may reference them via `[]`.
+    // Custom groups use `[]` directives (e.g. `[]🇭🇰 香港 HK Auto`) to reference smart
+    // auto-groups, so smart groups must be built first and their names must be known.
     if let Some(smart) = cfg.smart
         && smart.enable {
             build_smart_groups(smart, cfg.enriched, &mut groups, &mut auto_group_names, cfg.test_url);
         }
+
+    // Custom groups (if defined) — built after smart groups so `[]` directives
+    // can resolve against already-created smart group names.
+    if !cfg.custom_groups.is_empty() {
+        build_custom_groups(
+            cfg.custom_groups,
+            &all_names,
+            &auto_group_names,    // known smart groups for [] validation
+            cfg.enriched,
+            &mut groups,
+            &mut custom_group_names,
+            cfg.test_url,
+        );
+    }
 
     // 3. Build the main "Proxy" select group
     let main_proxy_members: Vec<String> = if !custom_group_names.is_empty() {
@@ -417,6 +427,7 @@ fn match_port_range(pattern: &str, port: u16) -> bool {
 fn build_custom_groups(
     custom_cfgs: &[CustomGroupConfig],
     all_names: &[String],
+    known_group_names: &[String],      // smart groups built before us, for [] validation
     enriched: &[EnrichedProxy],
     groups: &mut Vec<Value>,
     group_names_out: &mut Vec<String>,
@@ -431,7 +442,18 @@ fn build_custom_groups(
             if entry.starts_with("[]") {
                 // Special directive: []DIRECT, []REJECT, []PASS, []GroupName
                 let inner = entry.trim_start_matches("[]");
-                members.push(inner.to_string());
+                // Validate: is it a built-in policy, or does the referenced group exist?
+                let is_builtin = matches!(inner, "DIRECT" | "REJECT" | "PASS");
+                let is_existing_group = known_group_names.iter().any(|g| g == inner)
+                    || group_names_out.iter().any(|g| g == inner);
+                if is_builtin || is_existing_group {
+                    members.push(inner.to_string());
+                } else {
+                    log::warn!(
+                        "Custom group '{}': referenced group '{}' via [] does not exist. Known groups: {:?}",
+                        cfg.name, inner, known_group_names
+                    );
+                }
             } else if let Some((directive, pattern)) = parse_directive(entry) {
                 // !! directive matching against enriched proxy data
                 for ep in enriched {
@@ -683,13 +705,6 @@ fn build_proxy_providers(cfg: &ClashGenerationConfig<'_>) -> Option<Value> {
                 let path = format!("./proxy_providers/{}.yaml", domain);
                 entry.insert("path".into(), path.into());
 
-                // For auto-generated providers, we build a file-provider
-                // with the proxy list inline (added as file content)
-                let _proxy_list: Vec<Value> = proxy_names
-                    .iter()
-                    .map(|n| Value::String(n.clone()))
-                    .collect();
-
                 // Health-check for auto-generated providers
                 let mut hc_map = serde_yaml::Mapping::new();
                 hc_map.insert("enable".into(), true.into());
@@ -789,7 +804,7 @@ mod tests {
             test_enriched(n, &format!("1.0.0.{}", i+1), 443, "x", 100, "XX", "未知", "")
         }).collect();
 
-        build_custom_groups(&custom_cfgs, &names, &enriched, &mut groups, &mut group_names, "https://www.gstatic.com/generate_204");
+        build_custom_groups(&custom_cfgs, &names, &[], &enriched, &mut groups, &mut group_names, "https://www.gstatic.com/generate_204");
 
         assert_eq!(group_names.len(), 2);
         assert!(group_names.contains(&"日本节点".to_string()));
@@ -828,7 +843,7 @@ mod tests {
             test_enriched(n, "1.0.0.1", 443, "x", 100, "XX", "未知", "")
         }).collect();
 
-        build_custom_groups(&custom_cfgs, &names, &enriched, &mut groups, &mut group_names, "");
+        build_custom_groups(&custom_cfgs, &names, &[], &enriched, &mut groups, &mut group_names, "");
 
         // Empty group with no [] directives should be skipped
         assert!(group_names.is_empty());
@@ -857,7 +872,7 @@ mod tests {
 
         let enriched = vec![test_enriched("SG-01", "1.0.0.1", 443, "x", 100, "SG", "新加坡", "\u{1f1f8}\u{1f1ec}")];
 
-        build_custom_groups(&custom_cfgs, &names, &enriched, &mut groups, &mut group_names, "");
+        build_custom_groups(&custom_cfgs, &names, &[], &enriched, &mut groups, &mut group_names, "");
 
         assert_eq!(group_names.len(), 1);
         let group = &groups[0];
@@ -990,7 +1005,7 @@ mod tests {
             test_enriched(n, "1.0.0.1", 443, "x", 100, "XX", "未知", "")
         }).collect();
 
-        build_custom_groups(&custom_cfgs, &names, &enriched, &mut groups, &mut group_names, "");
+        build_custom_groups(&custom_cfgs, &names, &[], &enriched, &mut groups, &mut group_names, "");
 
         assert_eq!(group_names.len(), 1);
         let members = groups[0].as_mapping().unwrap().get("proxies").unwrap().as_sequence().unwrap();

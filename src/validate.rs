@@ -119,11 +119,12 @@ pub fn validate_clash_config(
         });
     }
 
-    // Create temp dir
-    let temp_dir = std::env::temp_dir().join(format!("proxy-validate-{}", std::process::id()));
-
-    // Clean up any stale temp dir first
-    let _ = std::fs::remove_dir_all(&temp_dir);
+    // Create uniquely-named temp dir (PID + nanos to avoid parallel-test collisions)
+    let ts = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let temp_dir = std::env::temp_dir().join(format!("proxy-validate-{}-{}", std::process::id(), ts));
 
     std::fs::create_dir_all(&temp_dir).map_err(|e| ValidateResult::Error {
         message: format!("Cannot create temp directory: {}", e),
@@ -284,6 +285,9 @@ socks-port: 7891
 mixed-port: 7892
 mode: rule
 log-level: info
+dns:
+  enable: true
+  listen: 0.0.0.0:53
 proxies:
   - name: test
     type: ss

@@ -24,6 +24,7 @@ const DEPRECATED_CIPHERS: &[&str] = &[
 /// 3. regex rename rules
 /// 4. append_proxy_type prefix
 /// 5. sort
+///
 /// Apply global include/exclude filter to proxies.
 /// Unlike PreprocessConfig's include/exclude, this is applied at the settings level
 /// before any per-group preprocessing.

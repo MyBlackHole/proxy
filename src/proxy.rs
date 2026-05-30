@@ -348,6 +348,26 @@ impl ShadowsocksRConfig {
 }
 
 impl VMessConfig {
+    /// Normalize VMess cipher to values supported by Mihomo/Clash-Meta.
+    /// Supported: auto, aes-128-gcm, chacha20-poly1305, none, zero.
+    fn normalize_cipher(&self) -> &str {
+        let raw = self.cipher.as_deref().unwrap_or("auto");
+        match raw {
+            "auto" | "aes-128-gcm" | "chacha20-poly1305" | "none" | "zero" => raw,
+            // Xray/V2Ray uses chacha20-ietf-poly1305; Mihomo uses chacha20-poly1305
+            "chacha20-ietf-poly1305" | "chacha20-poly1305-ietf" => "chacha20-poly1305",
+            "" | "aes-128-cfb" | "aes-256-cfb" | "aes-128-ctr" | "aes-256-ctr" | "aes-192-cfb"
+            | "aes-192-ctr" | "rc4-md5" => {
+                log::warn!("VMess proxy '{}': deprecated cipher '{raw}', falling back to 'auto'", self.name);
+                "auto"
+            }
+            other => {
+                log::warn!("VMess proxy '{}': unsupported cipher '{other}', falling back to 'auto'", self.name);
+                "auto"
+            }
+        }
+    }
+
     fn clash_mapping(&self) -> Mapping {
         let mut m = Mapping::new();
         m.insert("name".into(), self.name.as_str().into());
@@ -355,11 +375,11 @@ impl VMessConfig {
         m.insert("port".into(), Value::Number(Number::from(self.port)));
         m.insert("type".into(), "vmess".into());
         m.insert("uuid".into(), self.uuid.as_str().into());
-        if let Some(ref v) = self.alter_id
-            && let Ok(n) = v.parse::<u64>() {
-                m.insert("alterId".into(), Value::Number(Number::from(n)));
-        }
-        m.insert("cipher".into(), self.cipher.as_deref().unwrap_or("auto").into());
+        let alter_id = self.alter_id.as_ref()
+            .and_then(|v| v.parse::<u64>().ok())
+            .unwrap_or(0);
+        m.insert("alterId".into(), Value::Number(Number::from(alter_id)));
+        m.insert("cipher".into(), self.normalize_cipher().into());
         if let Some(v) = self.tls { m.insert("tls".into(), v.into()); }
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }

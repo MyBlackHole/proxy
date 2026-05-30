@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::future::Future;
+use std::path::Path;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -10,6 +11,7 @@ use crate::cache;
 use crate::config::*;
 use crate::convert;
 use crate::preprocess;
+use crate::validate;
 
 /// Initialize persistent cache from config settings
 fn init_cache_from_config(settings: &SettingsConfig) {
@@ -529,7 +531,7 @@ async fn process_airport_register(
     }
 
     // Generate random email via mailtm or use a generated one
-    let email = format!("{}@tempmail.org", uuid::Uuid::new_v4().to_string().split('-').next().unwrap_or("u"));
+    let email = format!("{}@tempmail.org", uuid::Uuid::new_v4().to_string().split('-').next().unwrap());
     let passwd = uuid::Uuid::new_v4().to_string();
 
     log::info!("Auto-registering at {} with email={}", domain.name, email);
@@ -871,6 +873,39 @@ async fn process_group_smart(
         if let Some(backend) = storage.get(target_name) {
             backend.write(&content, target_name).await?;
             log::info!("Pushed to '{}'", target_name);
+
+            // Optional: validate generated config with mihomo -t
+            if let Some(s) = settings {
+                let binary_path = s.validate_binary.as_deref().map(Path::new);
+                if let Ok(bin_path) = validate::find_validate_binary(binary_path) {
+                    let temp_dir = std::env::temp_dir()
+                        .join(format!("proxy-validate-output-{}", std::process::id()));
+                    let _ = std::fs::create_dir_all(&temp_dir);
+                    let config_path = temp_dir.join("config.yaml");
+                    if std::fs::write(&config_path, &content).is_ok() {
+                        match validate::validate_clash_config(&config_path, Some(&bin_path)) {
+                            Ok(validate::ValidateResult::Valid { version }) => {
+                                log::info!("Config '{}' validated OK ({})", target_name, version);
+                            }
+                            Ok(other) => {
+                                log::warn!("Config '{}' validation unexpected Ok: {:?}", target_name, other);
+                            }
+                            Err(validate::ValidateResult::Invalid { errors, .. }) => {
+                                log::warn!(
+                                    "Config '{}' validation FAILED ({} errors): {}",
+                                    target_name,
+                                    errors.len(),
+                                    errors.join("; ")
+                                );
+                            }
+                            Err(other) => {
+                                log::warn!("Config '{}' validation error: {:?}", target_name, other);
+                            }
+                        }
+                    }
+                    let _ = std::fs::remove_dir_all(&temp_dir);
+                }
+            }
         } else {
             log::warn!("No storage backend found for target: {}", target_name);
         }

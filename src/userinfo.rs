@@ -47,15 +47,6 @@ pub fn capture(url: &str, header_value: &str) {
     log::info!("UserInfo for {}: {}", url, format_single(&parse_header(header_value)));
 }
 
-/// Retrieve stored userinfo for a URL.
-#[allow(dead_code)]
-pub fn get(url: &str) -> Option<UserInfo> {
-    USER_INFO_MAP.lock().unwrap_or_else(|e| {
-        log::error!("USER_INFO_MAP mutex poisoned: {}", e);
-        e.into_inner()
-    }).get(url).cloned()
-}
-
 /// Build a human-readable summary of all stored userinfos.
 pub fn format_all() -> String {
     let map = USER_INFO_MAP.lock().unwrap_or_else(|e| {
@@ -163,20 +154,6 @@ mod tests {
         assert_eq!(info.upload, 100);
         assert_eq!(info.download, 200);
         assert_eq!(info.total, 1000);
-    }
-
-    #[test]
-    fn test_capture_and_get() {
-        capture("https://example.com/sub", "upload=0; download=500; total=1000; expire=1800000000");
-        let info = get("https://example.com/sub");
-        assert!(info.is_some());
-        let info = info.unwrap();
-        assert_eq!(info.download, 500);
-        assert_eq!(info.total, 1000);
-        // Clean up global state
-        if let Ok(mut map) = USER_INFO_MAP.lock() {
-            map.clear();
-        }
     }
 
     #[test]

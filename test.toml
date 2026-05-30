@@ -352,7 +352,7 @@ proxies = [
     "(日|日本|JP|Japan)",
     "(新|新加坡|SG|Singapore)",
     "(美|美国|US|United States)",
-    "[]香港 Auto",          # 引用其他分组
+    "(港|HK|Hong Kong)",          # 引用其他分组
     "[]DIRECT",
 ]
 

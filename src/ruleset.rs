@@ -208,7 +208,6 @@ pub fn generate_rule_provider(
     provider.insert("type".into(), "http".into());
     provider.insert("behavior".into(), behavior.into());
     provider.insert("url".into(), url.into());
-    provider.insert("path".into(), format!("./providers/{}.yaml", provider_name).into());
     provider.insert("interval".into(), Value::Number(Number::from(interval)));
 
     let mut map = Mapping::new();

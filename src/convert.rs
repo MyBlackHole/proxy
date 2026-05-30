@@ -89,7 +89,10 @@ pub(crate) fn group_by_region(proxies: &[EnrichedProxy]) -> Vec<RegionGroup> {
         .map(|(code, names)| {
             let emoji = region_emoji.get(&code).cloned().unwrap_or_default();
             let chinese_name = geoip::country_code_to_chinese(&code);
-            let display = if emoji.is_empty() {
+            let display = if code == "Unknown" {
+                // Avoid "Unknown Unknown" — use a cleaner fallback name
+                if emoji.is_empty() { "其他 Other".into() } else { format!("{} 其他 Other", emoji) }
+            } else if emoji.is_empty() {
                 format!("{} {}", chinese_name, code)
             } else {
                 format!("{}{} {}", emoji, chinese_name, code)

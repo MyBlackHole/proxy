@@ -42,7 +42,9 @@ pub async fn crawl_proxy_site(
         }
     };
 
+    log::debug!("[proxy_site] fetched {} bytes from {}, extracting URLs", body.len(), url);
     let mut results = extract_subscribes(&body);
+    log::info!("[proxy_site] {}: extracted {} subscribe/proxy URLs ({} bytes)", url, results.len(), body.len());
 
     // Apply include filter if set
     if !config.include.is_empty() {
