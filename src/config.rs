@@ -1113,6 +1113,12 @@ pub struct SettingsConfig {
     #[serde(default = "default_true")]
     pub append_userinfo: bool,
 
+    /// Path to save raw collected proxy nodes (JSON Lines format).
+    /// Each line is a raw ProxyNode parsed from subscriptions/crawling,
+    /// saved before health check and dedup. Leave empty to disable.
+    #[serde(default)]
+    pub raw_output: Option<String>,
+
     // ── Global Node Filtering (applied to all groups, before per-group preprocess) ──
 
     /// Global include filter: keep only proxies whose name matches this regex
@@ -1142,6 +1148,7 @@ impl Default for SettingsConfig {
             invisible: false,
             validate_binary: None,
             append_userinfo: true,
+            raw_output: None,
             filter_include: String::new(),
             filter_exclude: String::new(),
             cache: CacheSettings::default(),

@@ -29,6 +29,7 @@ use crate::error::*;
 use crate::geoip;
 use crate::parser;
 use crate::proxy::*;
+use crate::proxy_log::ProxyLogger;
 use crate::renewal;
 use crate::storage::*;
 use crate::subscribe;
@@ -48,6 +49,9 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
     let direct_client = build_direct_client()?;
 
+    let proxy_log = ProxyLogger::new("proxy_collection.log");
+    log::info!("Proxy collection log: proxy_collection.log");
+
     // 1. Crawl + airport auto-register → raw subscribe URLs
     let crawled_urls = crawl_and_discover(&client, &config).await?;
 
@@ -55,19 +59,36 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     process_renewals_all(&client, &config).await?;
 
     // 3. Domain subscribe-processing → EnrichedProxy (with latency)
-    let mut all_enriched = process_domain_subscriptions(&direct_client, &config).await?;
+    let (domain_enriched, domain_raw) = process_domain_subscriptions(&direct_client, &config).await?;
+    proxy_log.log_enriched_batch("domain", &domain_enriched);
+    let mut all_enriched = domain_enriched;
+    let mut all_raw = domain_raw;
 
     // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (direct, no proxy)
-    let crawled_enriched = process_crawled_proxies(
+    let (crawled_enriched, crawled_raw) = process_crawled_proxies(
         &direct_client, &crawled_urls, &config.settings,
     ).await?;
+    proxy_log.log_enriched_batch("crawl", &crawled_enriched);
     all_enriched.extend(crawled_enriched);
+    all_raw.extend(crawled_raw);
 
     // 5. Global dedup + name conflict resolution on EnrichedProxy
     log::info!("Total enriched proxies before dedup: {}", all_enriched.len());
     all_enriched = deduce::dedup_enriched(all_enriched);
     deduce::resolve_enriched_name_conflicts(&mut all_enriched);
     log::info!("Total enriched proxies after dedup: {}", all_enriched.len());
+    proxy_log.log_enriched_batch("final", &all_enriched);
+
+    // Save raw collected proxy nodes if configured
+    if let Some(ref raw_path) = config.settings.raw_output {
+        let raw_count = all_raw.len();
+        if raw_count > 0 {
+            match save_raw_proxies(raw_path, &all_raw) {
+                Ok(()) => log::info!("Saved {} raw proxy nodes to {}", raw_count, raw_path),
+                Err(e) => log::warn!("Failed to save raw proxy nodes to {}: {}", raw_path, e),
+            }
+        }
+    }
 
     // 6. Build storage backends
     let storage = match &config.storage {
@@ -125,13 +146,16 @@ async fn process_renewals_all(
     Ok(())
 }
 
+/// Process crawled/registered URLs into enriched proxies.
+///
+/// Returns (enriched_alive_proxies, raw_deduped_nodes).
 async fn process_crawled_proxies(
     client: &reqwest::Client,
     urls: &[String],
     settings: &SettingsConfig,
-) -> Result<Vec<EnrichedProxy>> {
+) -> Result<(Vec<EnrichedProxy>, Vec<ProxyNode>)> {
     if urls.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
     log::info!("Processing {} crawled/registered URLs", urls.len());
 
@@ -211,7 +235,7 @@ async fn process_crawled_proxies(
     }
 
     if crawled_proxies.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     // Dedup crawled proxies before health check: multiple subscription URLs
@@ -222,6 +246,9 @@ async fn process_crawled_proxies(
         log::info!("Dedup'd crawled proxies: {} -> {}", before, crawled_proxies.len());
     }
 
+    // Save raw nodes before health check
+    let raw_nodes = crawled_proxies.clone();
+
     log::info!("Running health check on {} crawled proxies", crawled_proxies.len());
     let results = alive::check_alive_batch(crawled_proxies, settings.concurrency).await;
     let total = results.len();
@@ -231,7 +258,7 @@ async fn process_crawled_proxies(
         .map(|r| EnrichedProxy::new(r.node, r.latency_ms))
         .collect();
     log::info!("Crawled: {}/{} enriched proxies alive", alive.len(), total);
-    Ok(alive)
+    Ok((alive, raw_nodes))
 }
 
 // ── Crawl Sources (parallel) ─────────────────────────────────────────────
@@ -644,10 +671,12 @@ async fn fetch_domain_proxies(
 
 /// Process all domain subscriptions with **global** dedup before health check:
 /// proxies shared across domains are only TCP-connected once.
+///
+/// Returns (enriched_alive_proxies, raw_deduped_nodes).
 async fn process_domain_subscriptions(
     client: &reqwest::Client,
     config: &AppConfig,
-) -> Result<Vec<EnrichedProxy>> {
+) -> Result<(Vec<EnrichedProxy>, Vec<ProxyNode>)> {
     // 1. Collect parsed nodes from every domain (no health check yet)
     let mut all_nodes: Vec<(ProxyNode, u32)> = Vec::new();
     for (idx, domain) in config.domains.iter().enumerate() {
@@ -663,7 +692,7 @@ async fn process_domain_subscriptions(
     }
 
     if all_nodes.is_empty() {
-        return Ok(Vec::new());
+        return Ok((Vec::new(), Vec::new()));
     }
 
     // 2. Global dedup across all domains
@@ -681,6 +710,8 @@ async fn process_domain_subscriptions(
         })
         .collect();
 
+    let raw_nodes = nodes_for_check.clone();
+
     // Resolve name conflicts across the global set
     deduce::resolve_name_conflicts(&mut nodes_for_check);
 
@@ -689,7 +720,7 @@ async fn process_domain_subscriptions(
     let alive_count = results.iter().filter(|r| r.alive).count();
     log::info!("{}/{} domain proxies alive", alive_count, results.len());
 
-    Ok(results
+    let enriched = results
         .into_iter()
         .filter(|r| r.alive)
         .map(|r| {
@@ -698,7 +729,9 @@ async fn process_domain_subscriptions(
             ep.source_id = source_map.get(&dk).copied().unwrap_or(0);
             ep
         })
-        .collect())
+        .collect();
+
+    Ok((enriched, raw_nodes))
 }
 
 /// Legacy per-domain health-check path (used by `check_alive_only`).
@@ -1009,4 +1042,23 @@ fn base64_encode(input: &str) -> String {
     use base64::Engine;
     use base64::engine::general_purpose;
     general_purpose::STANDARD.encode(input)
+}
+
+/// Save raw proxy nodes to a file in JSON Lines format.
+/// Each line is a JSON-serialized ProxyNode.
+fn save_raw_proxies(path: &str, nodes: &[ProxyNode]) -> Result<()> {
+    use std::io::Write;
+
+    let file_path = std::path::Path::new(path);
+    if let Some(parent) = file_path.parent() {
+        if !parent.as_os_str().is_empty() {
+            std::fs::create_dir_all(parent)?;
+        }
+    }
+    let mut file = std::fs::File::create(file_path)?;
+    for node in nodes {
+        let line = serde_json::to_string(node)?;
+        writeln!(file, "{}", line)?;
+    }
+    Ok(())
 }
