@@ -123,24 +123,6 @@ async fn process_renewals_all(
     Ok(())
 }
 
-async fn process_domain_subscriptions(
-    client: &reqwest::Client,
-    config: &AppConfig,
-) -> Result<Vec<EnrichedProxy>> {
-    let mut all_enriched: Vec<EnrichedProxy> = Vec::new();
-    for (idx, domain) in config.domains.iter().enumerate() {
-        let source_id = (idx + 1) as u32; // 1-based to match subconverter convention
-        let enriched = process_domain_enriched(client, domain, &config.settings).await?;
-        let proxies: Vec<EnrichedProxy> = enriched
-            .into_iter()
-            .map(|mut ep| { ep.source_id = source_id; ep })
-            .collect();
-        log::info!("Domain {}: {} alive enriched proxies", domain.name, proxies.len());
-        all_enriched.extend(proxies);
-    }
-    Ok(all_enriched)
-}
-
 async fn process_crawled_proxies(
     client: &reqwest::Client,
     urls: &[String],
@@ -228,6 +210,14 @@ async fn process_crawled_proxies(
 
     if crawled_proxies.is_empty() {
         return Ok(Vec::new());
+    }
+
+    // Dedup crawled proxies before health check: multiple subscription URLs
+    // may return the same proxy nodes
+    let before = crawled_proxies.len();
+    crawled_proxies = deduce::dedup_proxies(crawled_proxies);
+    if crawled_proxies.len() < before {
+        log::info!("Dedup'd crawled proxies: {} -> {}", before, crawled_proxies.len());
     }
 
     log::info!("Running health check on {} crawled proxies", crawled_proxies.len());
@@ -590,13 +580,15 @@ async fn process_renewals(
     Ok(())
 }
 
-// ── Domain Subscribe Processing (EnrichedProxy variant) ───────────────────
+// ── Domain Subscribe Processing ──────────────────────────────────────────
 
-async fn process_domain_enriched(
+/// Fetch and parse subscription links for one domain (no health check).
+/// Returns per-domain dedup'd proxy nodes.
+async fn fetch_domain_proxies(
     client: &reqwest::Client,
     domain: &DomainConfig,
     settings: &SettingsConfig,
-) -> Result<Vec<EnrichedProxy>> {
+) -> Result<Vec<ProxyNode>> {
     log::info!("Processing domain: {}", domain.name);
 
     let mut raw_links = Vec::new();
@@ -636,11 +628,7 @@ async fn process_domain_enriched(
         }
     }
 
-    log::info!(
-        "Domain {}: {} total proxy links",
-        domain.name,
-        raw_links.len()
-    );
+    log::info!("Domain {}: {} total proxy links", domain.name, raw_links.len());
 
     let mut proxies: Vec<ProxyNode> = raw_links
         .iter()
@@ -649,6 +637,75 @@ async fn process_domain_enriched(
     log::info!("Domain {}: {} proxies parsed", domain.name, proxies.len());
 
     proxies = deduce::dedup_proxies(proxies);
+    Ok(proxies)
+}
+
+/// Process all domain subscriptions with **global** dedup before health check:
+/// proxies shared across domains are only TCP-connected once.
+async fn process_domain_subscriptions(
+    client: &reqwest::Client,
+    config: &AppConfig,
+) -> Result<Vec<EnrichedProxy>> {
+    // 1. Collect parsed nodes from every domain (no health check yet)
+    let mut all_nodes: Vec<(ProxyNode, u32)> = Vec::new();
+    for (idx, domain) in config.domains.iter().enumerate() {
+        let source_id = (idx + 1) as u32;
+        match fetch_domain_proxies(client, domain, &config.settings).await {
+            Ok(nodes) => {
+                for node in nodes {
+                    all_nodes.push((node, source_id));
+                }
+            }
+            Err(e) => log::warn!("Domain {} skipped: {}", domain.name, e),
+        }
+    }
+
+    if all_nodes.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    // 2. Global dedup across all domains
+    let mut seen = std::collections::HashSet::new();
+    all_nodes.retain(|(node, _)| seen.insert(node.dedup_key()));
+    log::info!("{} globally dedup'd proxy nodes across all domains", all_nodes.len());
+
+    // 3. Build source_id map and prepare nodes for health check
+    let mut source_map: std::collections::HashMap<DedupKey, u32> = std::collections::HashMap::new();
+    let mut nodes_for_check: Vec<ProxyNode> = all_nodes
+        .iter()
+        .map(|(n, sid)| {
+            source_map.entry(n.dedup_key()).or_insert(*sid);
+            n.clone()
+        })
+        .collect();
+
+    // Resolve name conflicts across the global set
+    deduce::resolve_name_conflicts(&mut nodes_for_check);
+
+    log::info!("Running batch health check on {} globally dedup'd domain proxies", nodes_for_check.len());
+    let results = alive::check_alive_batch(nodes_for_check, config.settings.concurrency).await;
+    let alive_count = results.iter().filter(|r| r.alive).count();
+    log::info!("{}/{} domain proxies alive", alive_count, results.len());
+
+    Ok(results
+        .into_iter()
+        .filter(|r| r.alive)
+        .map(|r| {
+            let dk = r.node.dedup_key();
+            let mut ep = EnrichedProxy::new(r.node, r.latency_ms);
+            ep.source_id = source_map.get(&dk).copied().unwrap_or(0);
+            ep
+        })
+        .collect())
+}
+
+/// Legacy per-domain health-check path (used by `check_alive_only`).
+async fn process_domain_enriched(
+    client: &reqwest::Client,
+    domain: &DomainConfig,
+    settings: &SettingsConfig,
+) -> Result<Vec<EnrichedProxy>> {
+    let mut proxies = fetch_domain_proxies(client, domain, settings).await?;
     deduce::resolve_name_conflicts(&mut proxies);
 
     log::info!(
@@ -658,12 +715,7 @@ async fn process_domain_enriched(
     );
     let results = alive::check_alive_batch(proxies, settings.concurrency).await;
     let alive_count = results.iter().filter(|r| r.alive).count();
-    log::info!(
-        "Domain {}: {}/{} proxies alive",
-        domain.name,
-        alive_count,
-        results.len()
-    );
+    log::info!("Domain {}: {}/{} proxies alive", domain.name, alive_count, results.len());
 
     Ok(results
         .into_iter()
