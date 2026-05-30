@@ -12,6 +12,7 @@ pub mod mailtm;
 pub mod parser;
 pub mod preprocess;
 pub mod proxy;
+pub mod proxy_log;
 pub mod renewal;
 pub mod ruleset;
 pub mod storage;
