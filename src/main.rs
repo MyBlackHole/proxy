@@ -40,7 +40,9 @@ struct Args {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default())
-        .filter_module("reqwest::connect", log::LevelFilter::Warn)
+        // Reqwest's internal connection-level debug logs are extremely
+        // repetitive when many URLs share the same host — suppress them.
+        .filter_module("reqwest", log::LevelFilter::Warn)
         .init();
 
     let args = Args::parse();
