@@ -73,10 +73,6 @@ singlelink = true                         # 是否启用单链接模式
 persist_dir = "./pipeline_data"           # 管道持久化根目录（不可为空）
                                           # 采集结果 YAML 存储于此，供 convert 命令读取
 
-[crawl.persist]                           # ⚠️ 已废弃（旧缓存系统），将被移除
-subs = ""                                 # （不再使用）
-proxies = ""                              # （不再使用）
-
 [crawl.config]                            # 全局爬取内容过滤
 rename = ""
 include = ""

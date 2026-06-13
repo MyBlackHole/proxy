@@ -150,9 +150,6 @@ pub struct CrawlConfig {
     #[serde(default = "default_true")]
     pub singlelink: bool,
 
-    #[serde(default)]
-    pub persist: CrawlPersistConfig,
-
     /// Pipeline persistence output directory.  Defaults to ./pipeline_data/
     /// when the pipeline is invoked without a user-specified path.
     #[serde(default)]
@@ -202,15 +199,7 @@ pub struct CrawlConfig {
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
 
-    /// Max recursion depth for crawling subscription URLs.
-    /// 0 = no recursion (current behavior).
-    /// 1 = fetch subscription URLs, extract from their content too.
-    /// 2 = two levels deep, etc.
-    /// At each level, base64-encoded data is decoded and recursively processed.
-    #[serde(default)]
-    pub depth: usize,
-
-    /// Max cascade rounds for nested crawling. 0 = disabled (default).
+    /// Max cascade rounds for nested crawling. 0 = disabled.
     /// When > 0, newly discovered subscription URLs from the depth engine
     /// are fed back into the fetch pipeline for additional rounds.
     /// The pipeline's `remaining` depth is set to this value.
@@ -225,7 +214,6 @@ impl Default for CrawlConfig {
             exclude: String::new(),
             threshold: 5,
             singlelink: true,
-            persist: CrawlPersistConfig::default(),
             config: CrawlItemConfig::default(),
             telegram: TelegramCrawlConfig::default(),
             google: GoogleCrawlConfig::default(),
@@ -233,8 +221,7 @@ impl Default for CrawlConfig {
             github: GithubCrawlConfig::default(),
             twitter: TwitterCrawlConfig::default(),
             repositories: Vec::new(),
-            depth: 0,
-            nested_max_rounds: 0,
+            nested_max_rounds: 3,
             discord: DiscordCrawlConfig::default(),
             rss: RssCrawlConfig::default(),
             persist_dir: None,
@@ -466,15 +453,6 @@ pub struct ProxySiteConfig {
 
     #[serde(default)]
     pub push_to: Vec<String>,
-}
-
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct CrawlPersistConfig {
-    #[serde(default)]
-    pub subs: String,
-
-    #[serde(default)]
-    pub proxies: String,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -1355,13 +1333,12 @@ impl AppConfig {
     pub fn from_file(path: &str) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
         let config: Self = toml::from_str(&content)?;
-        // Validate: persist_dir must not be empty string
-        if let Some(ref d) = config.crawl.persist_dir {
-            if d.as_os_str().is_empty() {
-                return Err(crate::error::AppError::InvalidConfig(
-                    "[crawl].persist_dir must not be empty. Omit the field or set it to a valid directory path.".into(),
-                ));
-            }
+        if let Some(ref d) = config.crawl.persist_dir
+            && d.as_os_str().is_empty()
+        {
+            return Err(crate::error::AppError::InvalidConfig(
+                "[crawl].persist_dir must not be empty. Omit the field or set it to a valid directory path.".into(),
+            ));
         }
         Ok(config)
     }

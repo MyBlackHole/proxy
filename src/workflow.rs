@@ -181,14 +181,6 @@ async fn run_convert_inner(config: &AppConfig) -> Result<()> {
 
 // ── Combined workflow (crawl + convert) ──────────────────────────────────
 
-pub async fn run_workflow(config_path: &str) -> Result<()> {
-    let config = AppConfig::from_file(config_path)?;
-    run_crawl_inner(&config, config.settings.concurrency).await?;
-    run_convert_inner(&config).await?;
-    log::info!("Workflow completed");
-    Ok(())
-}
-
 async fn crawl_and_discover(
     client: &reqwest::Client,
     config: &AppConfig,
