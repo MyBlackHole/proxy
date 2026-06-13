@@ -36,7 +36,7 @@ mod proxy_api;
 pub use cache::PersistStore;
 pub use client::build_crawl_client;
 pub use depth::{crawl_items_with_depth, crawl_items_with_extractor};
-pub use pipeline::{run_pipeline, PipelineConfig};
+pub use pipeline::{run_pipeline, run_pipeline_stream, PipelineConfig};
 pub use extract::extract_subscribes;
 pub use extractor::{ContentExtractor, SubscriptionExtractor};
 pub use validate::{SubscribeStatus, is_valid_subscribe, is_expired, validate_subscribe};

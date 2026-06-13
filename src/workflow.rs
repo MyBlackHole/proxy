@@ -3,6 +3,7 @@ use std::future::Future;
 use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
+use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
 use crate::airport;
@@ -63,32 +64,26 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
         .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
     let _ = std::fs::create_dir_all(&persist_dir);
 
-    // 1. Crawl + airport auto-register → raw subscribe URLs
-    let crawled_urls = crawl_and_discover(&client, config).await?;
-    log::info!("Total collected subscribe URLs: {}", crawled_urls.len());
-
-    // Persist collected URLs as a plain-text list
-    {
-        let url_file = persist_dir.join("collected_urls.txt");
-        if let Ok(mut f) = std::fs::File::create(&url_file) {
-            use std::io::Write;
-            for url in &crawled_urls {
-                let _ = writeln!(f, "{url}");
-            }
-            log::info!("Saved {} collected URLs to {:?}", crawled_urls.len(), url_file);
-        }
-    }
-
-    // 2. Renewal flow
+    // 1. Renewal flow (serial — stays before crawl + pipeline)
     process_renewals_all(&client, config).await?;
 
-    // 3. Domain subscribe-processing → EnrichedProxy (with latency)
+    // 2. Domain subscribe-processing → EnrichedProxy (with latency)
     let (domain_enriched, domain_raw) = process_domain_subscriptions(&direct_client, config).await?;
     proxy_log.log_enriched_batch("domain", &domain_enriched);
     let mut all_enriched = domain_enriched;
     let all_raw = domain_raw;
 
-    // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (streaming pipeline)
+    // 3. Streaming: crawl + pipeline run concurrently
+    //
+    //    Crawl sources discover URLs and send them through a channel.
+    //    The pipeline starts processing as soon as the first URL arrives,
+    //    without waiting for all crawl sources to finish.
+    //
+    //    Uses tokio::join! (not tokio::spawn) because the crawl future
+    //    contains non-Send resources (rand::thread_rng in mailtm).
+    //    Both futures run on the same task — no Send bound needed.
+    let (crawl_tx, url_rx) = mpsc::unbounded_channel();
+
     let pipeline_config = crawl::PipelineConfig {
         fetch_concurrency: concurrency,
         validate_concurrency: concurrency,
@@ -96,13 +91,21 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
         nested_max_rounds: config.crawl.nested_max_rounds,
         persist_dir: persist_dir.clone(),
     };
-    let crawled_enriched = crawl::run_pipeline(
-        &direct_client, &pipeline_config, &crawled_urls,
-    ).await;
+
+    let (crawl_result, crawled_enriched) = tokio::join!(
+        crawl_and_discover_stream(&client, config, crawl_tx),
+        crawl::run_pipeline_stream(&direct_client, &pipeline_config, url_rx),
+    );
+
+    match crawl_result {
+        Ok(()) => log::info!("Crawl completed successfully"),
+        Err(e) => return Err(e),
+    }
+
     proxy_log.log_enriched_batch("crawl", &crawled_enriched);
     all_enriched.extend(crawled_enriched);
 
-    // 5. Global dedup + name conflict resolution on EnrichedProxy
+    // 4. Global dedup + name conflict resolution on EnrichedProxy
     log::info!("Total enriched proxies before dedup: {}", all_enriched.len());
     all_enriched = deduce::dedup_enriched(all_enriched);
     deduce::resolve_enriched_name_conflicts(&mut all_enriched);
@@ -181,6 +184,7 @@ async fn run_convert_inner(config: &AppConfig) -> Result<()> {
 
 // ── Combined workflow (crawl + convert) ──────────────────────────────────
 
+#[allow(dead_code)]
 async fn crawl_and_discover(
     client: &reqwest::Client,
     config: &AppConfig,
@@ -204,6 +208,40 @@ async fn crawl_and_discover(
     urls.sort();
     urls.dedup();
     Ok(urls)
+}
+
+/// Crawl all sources and send discovered subscription URLs into a channel.
+///
+/// Similar to `crawl_and_discover` but streams discovered URLs through an
+/// mpsc sender instead of collecting them into a Vec. The sender is dropped
+/// when this function returns, signalling to the receiver that no more URLs
+/// will arrive from this source.
+async fn crawl_and_discover_stream(
+    client: &reqwest::Client,
+    config: &AppConfig,
+    url_tx: mpsc::UnboundedSender<String>,
+) -> Result<()> {
+    let proxy = config.settings.socks_proxy.as_deref();
+    let urls = run_crawlers(client, config).await?;
+    for url in urls {
+        let _ = url_tx.send(url);
+    }
+
+    for domain in &config.domains {
+        if domain.coupon.is_empty() && !domain.secure {
+            continue;
+        }
+        match process_airport_register(client, domain, proxy).await {
+            Ok(new_urls) => {
+                log::info!("Airport {}: got {} subscribe URLs via auto-reg", domain.name, new_urls.len());
+                for url in new_urls {
+                    let _ = url_tx.send(url);
+                }
+            }
+            Err(e) => log::warn!("Airport {} auto-register skipped: {}", domain.name, e),
+        }
+    }
+    Ok(())
 }
 
 async fn process_renewals_all(

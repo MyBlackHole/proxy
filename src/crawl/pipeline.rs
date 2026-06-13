@@ -1,4 +1,5 @@
 use std::collections::HashSet;
+use std::io::Write;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -139,6 +140,135 @@ pub async fn run_pipeline(
     let _ = watcher_handle.await;
 
     log::info!("[pipeline] finished — {} enriched proxies", enriched.len());
+    enriched
+}
+
+// ── Streaming Pipeline Entry Point ─────────────────────────────────────
+
+/// Run the three-stage streaming pipeline with external URL receiver.
+///
+/// External URLs arrive via `external_url_rx`. An internal ingest task
+/// forwards them into the pipeline's internal URL channel (Phase 1). When
+/// the external rx is exhausted (all crawl sources done), the same task
+/// transitions to Phase 2 — monitoring `work_counter` until it reaches 0,
+/// then signalling shutdown. This two-phase design avoids the race condition
+/// of a separate watcher that could fire before any streaming URL arrives.
+pub async fn run_pipeline_stream(
+    client: &reqwest::Client,
+    config: &PipelineConfig,
+    mut external_url_rx: mpsc::UnboundedReceiver<String>,
+) -> Vec<EnrichedProxy> {
+    let work_counter = Arc::new(AtomicIsize::new(0));
+    let (shutdown_tx, shutdown_rx0) = watch::channel(false);
+    let (url_tx, url_rx) = mpsc::unbounded_channel();
+    let (content_tx, content_rx) = mpsc::unbounded_channel();
+    let (proxy_tx, proxy_rx) = mpsc::unbounded_channel();
+
+    log::info!(
+        "[pipeline] streaming start; persist={}",
+        config.persist_dir.display(),
+    );
+
+    // ── Spawn stages (same as run_pipeline) ──────────────────────────
+    let fetch_conc = config.fetch_concurrency;
+    let validate_conc = config.validate_concurrency;
+    let batch_size = config.validate_batch_size;
+
+    let persist_dir = config.persist_dir.clone();
+
+    let fetcher_handle = {
+        let client = client.clone();
+        let url_rx = url_rx;
+        let content_tx = content_tx;
+        let work = Arc::clone(&work_counter);
+        let shutdown = shutdown_rx0;
+        let sem = Arc::new(Semaphore::new(fetch_conc));
+        let persist = PersistStore::new(persist_dir.clone());
+        tokio::spawn(async move {
+            fetcher_stage(client, url_rx, content_tx, work, shutdown, sem, persist).await;
+        })
+    };
+
+    let extractor_handle = {
+        let url_tx_clone = url_tx.clone();
+        let content_rx = content_rx;
+        let proxy_tx = proxy_tx;
+        let work = Arc::clone(&work_counter);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let persist = PersistStore::new(persist_dir.clone());
+        tokio::spawn(async move {
+            extractor_stage(url_tx_clone, content_rx, proxy_tx, work, shutdown_rx, persist).await;
+        })
+    };
+
+    let validator_handle = {
+        let proxy_rx = proxy_rx;
+        let work = Arc::clone(&work_counter);
+        let shutdown_rx = shutdown_tx.subscribe();
+        let persist = PersistStore::new(persist_dir.clone());
+        tokio::spawn(async move {
+            validator_stage(proxy_rx, batch_size, validate_conc, work, shutdown_rx, persist).await
+        })
+    };
+
+    // ── Ingest-as-watcher task (replaces run_pipeline's separate watcher) ──
+    //
+    // Phase 1 — forward: read external rx → internal url_tx, write url_log
+    // Phase 2 — drain:   external rx exhausted → poll work_counter → shutdown
+    //
+    // This eliminates the classic streaming race condition where a
+    // time-based watcher could fire before the first URL arrives.
+    let ingest_work = Arc::clone(&work_counter);
+    let ingest_url_tx = url_tx.clone();
+    let ingest_shutdown_tx = shutdown_tx.clone();
+    let remaining = config.nested_max_rounds;
+    let url_log_path = persist_dir.join("collected_urls.txt");
+
+    let ingest_handle = tokio::spawn(async move {
+        let mut url_log = match std::fs::File::create(&url_log_path) {
+            Ok(f) => Some(f),
+            Err(e) => {
+                log::warn!("[pipeline] cannot create collected_urls.txt: {e}");
+                None
+            }
+        };
+
+        // Phase 1: Forward external URLs (streaming ingress)
+        while let Some(url) = external_url_rx.recv().await {
+            ingest_work.fetch_add(1, Ordering::SeqCst);
+            let _ = ingest_url_tx.send(CrawlTask {
+                url: url.clone(),
+                remaining,
+            });
+            if let Some(ref mut f) = url_log
+                && let Err(e) = writeln!(f, "{url}")
+            {
+                log::warn!("[pipeline] failed to write collected_urls.txt: {e}");
+            }
+        }
+        log::info!("[pipeline] external URL source exhausted; waiting for pipeline drain");
+
+        // Phase 2: External rx exhausted — monitor work_counter
+        loop {
+            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+            if ingest_work.load(Ordering::SeqCst) <= 0 {
+                let _ = ingest_shutdown_tx.send(true);
+                break;
+            }
+        }
+    });
+
+    // ── Collect results ──────────────────────────────────────────────
+    let enriched = validator_handle.await
+        .ok()
+        .unwrap_or_default();
+
+    let _ = shutdown_tx.send(true);
+    let _ = fetcher_handle.await;
+    let _ = extractor_handle.await;
+    let _ = ingest_handle.await;
+
+    log::info!("[pipeline] streaming finished — {} enriched proxies", enriched.len());
     enriched
 }
 
@@ -395,5 +525,58 @@ mod tests {
             persist_dir: PathBuf::from("/tmp/test"),
         };
         assert_eq!(config.fetch_concurrency, 4);
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_stream_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = PipelineConfig {
+            fetch_concurrency: 2,
+            validate_concurrency: 2,
+            validate_batch_size: 50,
+            nested_max_rounds: 0,
+            persist_dir: dir.path().to_path_buf(),
+        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+        drop(tx); // No URLs — signal immediate end of stream
+        let result = run_pipeline_stream(&client, &config, rx).await;
+        assert!(result.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_pipeline_stream_delayed() {
+        let dir = tempfile::tempdir().unwrap();
+        let config = PipelineConfig {
+            fetch_concurrency: 2,
+            validate_concurrency: 2,
+            validate_batch_size: 50,
+            nested_max_rounds: 0,
+            persist_dir: dir.path().to_path_buf(),
+        };
+        let client = reqwest::Client::builder()
+            .timeout(std::time::Duration::from_secs(1))
+            .build()
+            .unwrap();
+        let (tx, rx) = mpsc::unbounded_channel();
+
+        let pipeline = run_pipeline_stream(&client, &config, rx);
+
+        // Send a URL after a small delay, simulating streaming input
+        let handle = tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            tx.send("https://example.com/sub".into()).ok();
+            drop(tx);
+        });
+
+        let result = pipeline.await;
+        // The URL won't resolve in the test environment (timeout/error),
+        // so no enriched proxies are produced — but the pipeline should
+        // not hang and should shut down cleanly.
+        assert!(result.is_empty());
+        handle.await.unwrap();
     }
 }
