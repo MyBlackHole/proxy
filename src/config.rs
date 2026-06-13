@@ -232,48 +232,6 @@ fn default_proxy_sites() -> Vec<ProxySiteConfig> {
             include: String::new(),
             exclude: String::new(),
         },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://raw.githubusercontent.com/TheSpeedX/SOCKS-Proxy-List/master/socks5.txt".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://raw.githubusercontent.com/free-proxy-list/free-proxy-list/main/free-proxy-list.txt".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies.txt".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://proxifly-free-proxy-list.p.rapidapi.com/api/v1/proxies?protocol=http&protocol=socks5".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
-        ProxySiteConfig {
-            enable: true,
-            url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all".into()),
-            include: String::new(),
-            exclude: String::new(),
-        },
     ]
 }
 

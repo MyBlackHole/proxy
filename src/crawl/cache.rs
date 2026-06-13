@@ -4,6 +4,7 @@
 //! side-effect.  No data is ever read back during normal pipeline
 //! execution — the disk is a pure record of what passed through.
 
+use std::io::Write;
 use std::path::PathBuf;
 
 use sha2::{Digest, Sha256};
@@ -11,8 +12,8 @@ use sha2::{Digest, Sha256};
 use crate::error::AppError;
 use crate::proxy::EnrichedProxy;
 
-/// Maximum size for `proxies.jsonl` before rotating (32 MiB).
-const JSONL_ROTATION_BYTES: u64 = 32 * 1024 * 1024;
+/// Maximum size for `proxies.txt` before rotating (32 MiB).
+const ROTATION_BYTES: u64 = 32 * 1024 * 1024;
 
 // ── Persist Store ────────────────────────────────────────────────────────
 
@@ -21,13 +22,15 @@ const JSONL_ROTATION_BYTES: u64 = 32 * 1024 * 1024;
 /// Directory layout:
 /// ```text
 /// <root>/
+///   collected_urls.txt   → all discovered URLs (audit trail)
+///   collected_bad_urls.txt→ unrecognised URLs (neither HTTP(S) nor proxy links)
 ///   fetcher/<sha256(url)>/
 ///     meta.json         → {"url":"...","size":N}
 ///     content.txt       → raw fetched body (plain text)
-///   extractor/<sha256(url)>.json
-///                       → {"url":"...","proxies":[<ProxyNode JSON>,...]}
-///   validator/proxies.jsonl
-///                       → JSON Lines, one EnrichedProxy per line
+///   extractor/proxies.txt
+///                       → one proxy URL per line (plain text)
+///   validator/proxies.txt
+///                       → addr:port latency_ms (plain text, rotated when > 32 MiB)
 /// ```
 pub struct PersistStore {
     root: PathBuf,
@@ -63,7 +66,7 @@ impl PersistStore {
 
     fn fetcher_dir(&self) -> PathBuf { self.root.join("fetcher") }
     fn extractor_dir(&self) -> PathBuf { self.root.join("extractor") }
-    fn validator_file(&self) -> PathBuf { self.root.join("validator").join("proxies.jsonl") }
+    fn validator_file(&self) -> PathBuf { self.root.join("validator").join("proxies.txt") }
 
     fn ensure_dirs(&self) {
         for (label, dir) in [
@@ -108,34 +111,36 @@ impl PersistStore {
 
     // ── Extractor ───────────────────────────────────────────────────────
 
-    /// Persist extracted proxy URL strings for a URL to disk.
-    pub fn save_extracted(&self, url: &str, proxies: &[String]) {
-        let path = self.extractor_dir().join(format!("{}.json", Self::url_key(url)));
-        let data = serde_json::json!({ "url": url, "proxies": proxies });
-        match serde_json::to_vec(&data) {
-            Ok(b) => {
-                if let Err(e) = std::fs::write(&path, b) {
-                    log::warn!("[persist] save_extracted: write failed: {e}");
-                }
+    /// Append extracted proxy URL strings to a file, one URL per line.
+    pub fn save_extracted(&self, _url: &str, proxies: &[String]) {
+        let path = self.extractor_dir().join("proxies.txt");
+        let file = match std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+        {
+            Ok(f) => f,
+            Err(e) => {
+                log::warn!("[persist] save_extracted: open failed: {e}");
+                return;
             }
-            Err(e) => log::warn!("[persist] save_extracted: serialize failed: {e}"),
+        };
+        for proxy in proxies {
+            if let Err(e) = writeln!(&file, "{proxy}") {
+                log::warn!("[persist] save_extracted: write failed: {e}");
+                return;
+            }
         }
     }
 
     // ── Validator ───────────────────────────────────────────────────────
 
-    /// Append a validated proxy result to the JSON Lines file.
-    /// Rotates the file when it exceeds `JSONL_ROTATION_BYTES`.
+    /// Append a validated proxy result as a plain text line: `addr:port latency_ms`.
+    /// Rotates the file when it exceeds `ROTATION_BYTES`.
     pub fn save_validated(&self, proxy: &EnrichedProxy) {
         let path = self.validator_file();
-        self.maybe_rotate_jsonl(&path);
-        let line = match serde_json::to_string(proxy) {
-            Ok(l) => l,
-            Err(e) => {
-                log::warn!("[persist] save_validated: serialize failed: {e}");
-                return;
-            }
-        };
+        self.maybe_rotate(&path);
+        let line = format!("{}:{} {}", proxy.node.host(), proxy.node.port(), proxy.latency_ms);
         if let Err(e) = std::fs::OpenOptions::new()
             .create(true)
             .append(true)
@@ -149,25 +154,25 @@ impl PersistStore {
         }
     }
 
-    /// Rotate `proxies.jsonl` if it exceeds the size limit.
-    fn maybe_rotate_jsonl(&self, path: &std::path::Path) {
+    /// Rotate `proxies.txt` if it exceeds the size limit.
+    fn maybe_rotate(&self, path: &std::path::Path) {
         let metadata = match std::fs::metadata(path) {
             Ok(m) => m,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => return,
             Err(e) => {
-                log::warn!("[persist] check jsonl metadata failed: {e}");
+                log::warn!("[persist] check metadata failed: {e}");
                 return;
             }
         };
-        if metadata.len() < JSONL_ROTATION_BYTES {
+        if metadata.len() < ROTATION_BYTES {
             return;
         }
         let ts = chrono::Utc::now().format("%Y%m%d-%H%M%S");
-        let rotated = path.with_file_name(format!("proxies-{ts}.jsonl"));
+        let rotated = path.with_file_name(format!("proxies-{ts}.txt"));
         if let Err(e) = std::fs::rename(path, &rotated) {
-            log::warn!("[persist] rotate jsonl failed: {e}");
+            log::warn!("[persist] rotate failed: {e}");
         } else {
-            log::info!("[persist] rotated proxies.jsonl → {}", rotated.display());
+            log::info!("[persist] rotated proxies.txt → {}", rotated.display());
         }
     }
 
