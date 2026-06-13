@@ -8,12 +8,12 @@ use crate::subscribe;
 
 // ── Classification ──────────────────────────────────────────────────────
 
-enum Item {
+pub enum Item {
     Terminal(String),
     Resolvable(Source),
 }
 
-fn classify(item: &str) -> Item {
+pub fn classify(item: &str) -> Item {
     let s = item.trim();
     if s.starts_with("http://") || s.starts_with("https://") {
         Item::Resolvable(Source::Http(s.to_string()))
@@ -28,13 +28,13 @@ fn classify(item: &str) -> Item {
 
 // ── Source Resolution ──────────────────────────────────────────────────
 
-enum Source {
+pub enum Source {
     Http(String),
     Base64(String),
 }
 
 impl Source {
-    async fn resolve(&self, client: &reqwest::Client) -> Option<String> {
+    pub async fn resolve(&self, client: &reqwest::Client) -> Option<String> {
         match self {
             Source::Http(url) => match subscribe::fetch_with_client(client, url).await {
                 Ok(body) => Some(body),

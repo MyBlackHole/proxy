@@ -110,18 +110,17 @@ impl ProxyLogger {
     }
 
     fn write_entry(&self, line: &str) {
-        if let Ok(mut guard) = self.file.lock() {
-            if let Some(ref mut file) = *guard {
+        if let Ok(mut guard) = self.file.lock()
+            && let Some(ref mut file) = *guard {
                 let _ = writeln!(file, "{}", line);
             }
-        }
     }
 }
 
 fn open_log_file(path: &PathBuf) -> Option<std::fs::File> {
-    if let Some(parent) = path.parent() {
-        if !parent.as_os_str().is_empty() {
-            if let Err(e) = fs::create_dir_all(parent) {
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+            && let Err(e) = fs::create_dir_all(parent) {
                 log::warn!(
                     "Failed to create proxy log directory '{}': {}",
                     parent.display(),
@@ -129,8 +128,6 @@ fn open_log_file(path: &PathBuf) -> Option<std::fs::File> {
                 );
                 return None;
             }
-        }
-    }
     match OpenOptions::new()
         .create(true)
         .append(true)

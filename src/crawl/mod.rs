@@ -17,6 +17,7 @@
 mod client;
 mod depth;
 mod extract;
+mod pipeline;
 mod extractor;
 mod validate;
 mod telegram;
@@ -33,6 +34,7 @@ mod proxy_api;
 
 pub use client::build_crawl_client;
 pub use depth::{crawl_items_with_depth, crawl_items_with_extractor};
+pub use pipeline::{run_pipeline, PipelineConfig};
 pub use extract::extract_subscribes;
 pub use extractor::{ContentExtractor, SubscriptionExtractor};
 pub use validate::{SubscribeStatus, is_valid_subscribe, is_expired, validate_subscribe};

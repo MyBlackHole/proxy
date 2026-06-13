@@ -16,8 +16,8 @@ pub async fn crawl_proxy_apis(
         .send().await
         && let Ok(text) = resp.text().await
     {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(data) = json["data"].as_array() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(data) = json["data"].as_array() {
                 for entry in data {
                     if let (Some(ip), Some(port), Some(protocols)) = (
                         entry["ip"].as_str(),
@@ -33,7 +33,6 @@ pub async fn crawl_proxy_apis(
                     }
                 }
             }
-        }
         // Also extract any subscribe URLs
         all_results.extend(extract_subscribes(&text));
     }
@@ -51,8 +50,8 @@ pub async fn crawl_proxy_apis(
         .send().await
         && let Ok(text) = resp.text().await
     {
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-            if let Some(proxies) = json.as_array() {
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+            && let Some(proxies) = json.as_array() {
                 for entry in proxies {
                     if let (Some(ip), Some(port)) = (
                         entry["ip"].as_str(),
@@ -63,7 +62,6 @@ pub async fn crawl_proxy_apis(
                     }
                 }
             }
-        }
         all_results.extend(extract_subscribes(&text));
     }
 

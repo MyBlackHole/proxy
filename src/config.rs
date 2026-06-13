@@ -195,6 +195,21 @@ pub struct CrawlConfig {
 
     #[serde(default)]
     pub pages: Vec<PageCrawlConfig>,
+
+    /// Max recursion depth for crawling subscription URLs.
+    /// 0 = no recursion (current behavior).
+    /// 1 = fetch subscription URLs, extract from their content too.
+    /// 2 = two levels deep, etc.
+    /// At each level, base64-encoded data is decoded and recursively processed.
+    #[serde(default)]
+    pub depth: usize,
+
+    /// Max cascade rounds for nested crawling. 0 = disabled (default).
+    /// When > 0, newly discovered subscription URLs from the depth engine
+    /// are fed back into the fetch pipeline for additional rounds.
+    /// The pipeline's `remaining` depth is set to this value.
+    #[serde(default)]
+    pub nested_max_rounds: usize,
 }
 
 impl Default for CrawlConfig {
@@ -212,6 +227,8 @@ impl Default for CrawlConfig {
             github: GithubCrawlConfig::default(),
             twitter: TwitterCrawlConfig::default(),
             repositories: Vec::new(),
+            depth: 0,
+            nested_max_rounds: 0,
             discord: DiscordCrawlConfig::default(),
             rss: RssCrawlConfig::default(),
             proxy_sites: default_proxy_sites(),

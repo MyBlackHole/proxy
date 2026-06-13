@@ -62,16 +62,20 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     let (domain_enriched, domain_raw) = process_domain_subscriptions(&direct_client, &config).await?;
     proxy_log.log_enriched_batch("domain", &domain_enriched);
     let mut all_enriched = domain_enriched;
-    let mut all_raw = domain_raw;
+    let all_raw = domain_raw;
 
-    // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (direct, no proxy)
-    let crawl_depth = config.crawl.depth;
-    let (crawled_enriched, crawled_raw) = process_crawled_proxies(
-        &direct_client, &crawled_urls, &config.settings, crawl_depth,
-    ).await?;
+    // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (streaming pipeline)
+    let pipeline_config = crawl::PipelineConfig {
+        fetch_concurrency: config.settings.concurrency,
+        validate_concurrency: config.settings.concurrency,
+        validate_batch_size: 50,
+        nested_max_rounds: config.crawl.nested_max_rounds,
+    };
+    let crawled_enriched = crawl::run_pipeline(
+        &direct_client, &pipeline_config, &crawled_urls,
+    ).await;
     proxy_log.log_enriched_batch("crawl", &crawled_enriched);
     all_enriched.extend(crawled_enriched);
-    all_raw.extend(crawled_raw);
 
     // 5. Global dedup + name conflict resolution on EnrichedProxy
     log::info!("Total enriched proxies before dedup: {}", all_enriched.len());
@@ -145,102 +149,6 @@ async fn process_renewals_all(
         }
     }
     Ok(())
-}
-
-/// Process crawled/registered URLs into enriched proxies.
-///
-/// Returns (enriched_alive_proxies, raw_deduped_nodes).
-async fn process_crawled_proxies(
-    client: &reqwest::Client,
-    urls: &[String],
-    settings: &SettingsConfig,
-    depth: usize,
-) -> Result<(Vec<EnrichedProxy>, Vec<ProxyNode>)> {
-    if urls.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-    log::info!("Processing {} crawled/registered URLs", urls.len());
-
-    let mut crawled_proxies = Vec::new();
-    let mut http_urls: Vec<String> = Vec::new();
-
-    for url in urls {
-        // Direct proxy URL (non-HTTP scheme like ss://, trojan://, etc.)
-        if url.contains("://") && !url.starts_with("http://") && !url.starts_with("https://") {
-            if let Ok(node) = parser::parse_proxy_url(url) {
-                crawled_proxies.push(node);
-            }
-            continue;
-        }
-
-        // Base64-encoded subscription data extracted from crawled pages
-        if !url.contains("://") && url.len() > 20 {
-            let stripped: String = url.chars().filter(|c| !c.is_whitespace()).collect();
-            if stripped.len() > 20
-                && stripped.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-                && let Ok(decoded) = subscribe::decode_base64_subscription(&stripped)
-            {
-                let items = vec![decoded];
-                let results = crawl::crawl_items_with_depth(client, &items, depth, settings.concurrency).await;
-                if !results.is_empty() {
-                    log::info!("Base64 URL (depth={}) decoded into {} proxy links", depth, results.len());
-                    for link in results {
-                        if let Ok(node) = parser::parse_proxy_url(&link) {
-                            crawled_proxies.push(node);
-                        }
-                    }
-                }
-                continue;
-            }
-        }
-
-        // HTTP(S) subscription URL — will be fetched concurrently
-        http_urls.push(url.clone());
-    }
-
-    // Dedup HTTP URLs to avoid duplicate fetches
-    http_urls.sort();
-    http_urls.dedup();
-
-    // Concurrently fetch HTTP subscription URLs using shared client (no proxy)
-    if !http_urls.is_empty() {
-        log::info!("Concurrently fetching {} unique HTTP subscription URLs (depth={})", http_urls.len(), depth);
-
-        // Unified depth crawling via shared engine for all depth levels
-        let results = crawl::crawl_items_with_depth(client, &http_urls, depth, settings.concurrency).await;
-        log::info!("Depth crawl returned {} proxy links", results.len());
-        for link in results {
-            if let Ok(node) = parser::parse_proxy_url(&link) {
-                crawled_proxies.push(node);
-            }
-        }
-    }
-
-    if crawled_proxies.is_empty() {
-        return Ok((Vec::new(), Vec::new()));
-    }
-
-    // Dedup crawled proxies before health check: multiple subscription URLs
-    // may return the same proxy nodes
-    let before = crawled_proxies.len();
-    crawled_proxies = deduce::dedup_proxies(crawled_proxies);
-    if crawled_proxies.len() < before {
-        log::info!("Dedup'd crawled proxies: {} -> {}", before, crawled_proxies.len());
-    }
-
-    // Save raw nodes before health check
-    let raw_nodes = crawled_proxies.clone();
-
-    log::info!("Running health check on {} crawled proxies", crawled_proxies.len());
-    let results = alive::check_alive_batch(crawled_proxies, settings.concurrency).await;
-    let total = results.len();
-    let alive: Vec<EnrichedProxy> = results
-        .into_iter()
-        .filter(|r| r.alive)
-        .map(|r| EnrichedProxy::new(r.node, r.latency_ms))
-        .collect();
-    log::info!("Crawled: {}/{} enriched proxies alive", alive.len(), total);
-    Ok((alive, raw_nodes))
 }
 
 // ── Crawl Sources (parallel) ─────────────────────────────────────────────
@@ -1048,11 +956,10 @@ fn save_raw_proxies(path: &str, nodes: &[ProxyNode]) -> Result<()> {
     use std::io::Write;
 
     let file_path = std::path::Path::new(path);
-    if let Some(parent) = file_path.parent() {
-        if !parent.as_os_str().is_empty() {
+    if let Some(parent) = file_path.parent()
+        && !parent.as_os_str().is_empty() {
             std::fs::create_dir_all(parent)?;
         }
-    }
     let mut file = std::fs::File::create(file_path)?;
     for node in nodes {
         let line = serde_json::to_string(node)?;

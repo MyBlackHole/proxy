@@ -30,8 +30,8 @@ pub async fn crawl_reddit(
             && let Ok(text) = resp.text().await
         {
             // Try to parse JSON response and extract post titles + content
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
-                if let Some(children) = json["data"]["children"].as_array() {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
+                && let Some(children) = json["data"]["children"].as_array() {
                     for child in children {
                         if let Some(post) = child["data"].as_object() {
                             // Collect title + selftext + url for extraction
@@ -55,7 +55,6 @@ pub async fn crawl_reddit(
                         }
                     }
                 }
-            }
         }
 
         // Brief delay between subreddits to respect rate limits
