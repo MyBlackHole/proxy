@@ -67,13 +67,6 @@ async fn fetch_http(url: &str, proxy: Option<&str>) -> Result<String> {
     let client = builder.build()?;
     let resp = client.get(url).send().await?;
 
-    // Capture Subscription-UserInfo header before consuming the response
-    if let Some(header) = resp.headers().get("subscription-userinfo")
-        && let Ok(val) = header.to_str()
-            && !val.is_empty() {
-                crate::userinfo::capture(url, val);
-            }
-
     Ok(resp.text().await?)
 }
 
@@ -303,12 +296,6 @@ pub async fn fetch_with_client(client: &reqwest::Client, url: &str) -> Result<St
 
     let result = async {
         let resp = client.get(url).send().await?;
-        // Capture Subscription-UserInfo header before consuming the response
-        if let Some(header) = resp.headers().get("subscription-userinfo")
-            && let Ok(val) = header.to_str()
-            && !val.is_empty() {
-                crate::userinfo::capture(url, val);
-            }
         Ok(resp.text().await?)
     }.await;
 

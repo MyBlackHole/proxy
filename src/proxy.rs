@@ -714,10 +714,4 @@ impl EnrichedProxy {
             source_id,
         }
     }
-
-    pub fn attach_geo(&mut self, geo: &crate::geoip::GeoInfo) {
-        self.country_code = geo.country_code.clone();
-        self.country_name = geo.country_name.clone();
-        self.emoji = geo.emoji.clone();
-    }
 }

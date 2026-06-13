@@ -12,12 +12,6 @@ pub struct AppConfig {
     pub crawl: CrawlConfig,
 
     #[serde(default)]
-    pub groups: HashMap<String, GroupConfig>,
-
-    #[serde(default)]
-    pub storage: Option<StorageConfig>,
-
-    #[serde(default)]
     pub settings: SettingsConfig,
 }
 
@@ -43,9 +37,6 @@ pub struct DomainConfig {
 
     #[serde(default)]
     pub exclude: String,
-
-    #[serde(default)]
-    pub push_to: Vec<String>,
 
     #[serde(default)]
     pub coupon: String,
@@ -240,56 +231,48 @@ fn default_proxy_sites() -> Vec<ProxySiteConfig> {
             url: Some("https://raw.githubusercontent.com/Pawdroid/Free-servers/main/sub".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://raw.githubusercontent.com/TheSpeedX/SOCKS-Proxy-List/master/socks5.txt".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://raw.githubusercontent.com/roosterkid/openproxylist/main/HTTPS_RAW.txt".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://raw.githubusercontent.com/free-proxy-list/free-proxy-list/main/free-proxy-list.txt".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://raw.githubusercontent.com/jetkai/proxy-list/main/online-proxies/txt/proxies.txt".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://proxifly-free-proxy-list.p.rapidapi.com/api/v1/proxies?protocol=http&protocol=socks5".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=http&timeout=10000&country=all".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
         ProxySiteConfig {
             enable: true,
             url: Some("https://api.proxyscrape.com/v2/?request=getproxies&protocol=socks5&timeout=10000&country=all".into()),
             include: String::new(),
             exclude: String::new(),
-            push_to: Vec::new(),
         },
     ]
 }
@@ -311,8 +294,6 @@ pub struct RedditCrawlConfig {
     #[serde(default = "default_reddit_limit")]
     pub limit: usize,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 impl Default for RedditCrawlConfig {
@@ -321,7 +302,6 @@ impl Default for RedditCrawlConfig {
             enable: true,
             subreddits: default_reddit_subreddits(),
             limit: 50,
-            push_to: Vec::new(),
         }
     }
 }
@@ -343,15 +323,12 @@ pub struct ProxyApiCrawlConfig {
     #[serde(default = "default_true")]
     pub enable: bool,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 impl Default for ProxyApiCrawlConfig {
     fn default() -> Self {
         Self {
             enable: true,
-            push_to: Vec::new(),
         }
     }
 }
@@ -383,8 +360,6 @@ pub struct DiscordCrawlConfig {
     #[serde(default = "default_discord_limit")]
     pub limit: usize,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 impl Default for DiscordCrawlConfig {
@@ -395,7 +370,6 @@ impl Default for DiscordCrawlConfig {
             guild_id: String::new(),
             channels: Vec::new(),
             limit: 100,
-            push_to: Vec::new(),
         }
     }
 }
@@ -417,8 +391,6 @@ pub struct RssCrawlConfig {
     #[serde(default = "default_rss_limit")]
     pub limit: usize,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 impl Default for RssCrawlConfig {
@@ -427,7 +399,6 @@ impl Default for RssCrawlConfig {
             enable: true,
             urls: Vec::new(),
             limit: 100,
-            push_to: Vec::new(),
         }
     }
 }
@@ -451,8 +422,6 @@ pub struct ProxySiteConfig {
     #[serde(default)]
     pub exclude: String,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -520,8 +489,6 @@ pub struct TelegramUserConfig {
     #[serde(default)]
     pub config: CrawlItemConfig,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 
@@ -575,8 +542,6 @@ pub struct TwitterUserConfig {
     #[serde(default)]
     pub config: CrawlItemConfig,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 fn default_twitter_num() -> usize { 50 }
@@ -603,8 +568,6 @@ pub struct YandexCrawlConfig {
     #[serde(default)]
     pub notinurl: Vec<String>,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 fn default_yandex_query() -> String {
@@ -647,8 +610,6 @@ pub struct PageCrawlConfig {
     #[serde(default)]
     pub concurrency: usize,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 fn default_page_start() -> usize { 1 }
@@ -673,8 +634,6 @@ pub struct GoogleCrawlConfig {
     #[serde(default)]
     pub notinurl: Vec<String>,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 fn default_google_query() -> String {
@@ -686,8 +645,6 @@ pub struct GithubUserConfig {
     #[serde(default)]
     pub sub: String,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 }
 
 #[derive(Debug, Clone, Default, Deserialize)]
@@ -713,8 +670,6 @@ pub struct GithubCrawlConfig {
     #[serde(default = "default_github_pages")]
     pub pages: usize,
 
-    #[serde(default)]
-    pub push_to: Vec<String>,
 
     #[serde(default)]
     pub exclude: String,
@@ -780,386 +735,6 @@ fn default_github_search_topics() -> Vec<String> {
 
 
 #[derive(Debug, Clone, Deserialize)]
-pub struct GroupConfig {
-    #[serde(default)]
-    pub targets: HashMap<String, String>,
-
-    /// Enable GeoIP-based emoji in region group names (default: false)
-    #[serde(default)]
-    pub emoji: bool,
-
-    /// Strip existing emoji characters from proxy names before processing
-    #[serde(default)]
-    pub remove_old_emoji: bool,
-
-    #[serde(default)]
-    pub list: bool,
-
-    #[serde(default)]
-    pub regularize: Option<RegularizeConfig>,
-
-    #[serde(default)]
-    pub smart: Option<SmartGroupConfig>,
-
-    // ── Node Preprocessing Pipeline ──
-
-    /// Pre-processing pipeline applied to proxies before output generation
-    #[serde(default)]
-    pub preprocess: Option<PreprocessConfig>,
-
-    // ── Custom Proxy Groups (subconverter-style) ──
-
-    /// User-defined proxy groups with regex-based proxy matching
-    #[serde(default)]
-    pub custom_groups: Vec<CustomGroupConfig>,
-
-    // ── External Rule Sets ──
-
-    /// Remote rule sets downloaded and injected as inline rules or rule-providers
-    #[serde(default)]
-    pub rulesets: Vec<RulesetConfig>,
-
-    // ── Template Override ──
-
-    /// Custom base Clash YAML template (replaces default header)
-    #[serde(default)]
-    pub template: Option<TemplateConfig>,
-}
-
-/// Custom proxy group — subconverter-style regex-based group membership
-///
-/// Each group defines a list of `proxies` entries. Each entry is either:
-/// - A **regex pattern** (e.g. `"(美|美国|US)"`) — matches proxy names
-/// - A **special policy marker** (e.g. `"[]DIRECT"`, `"[]REJECT"`, `"[]PASS"`)
-/// - A **group reference** (e.g. `"[]自动选择"`) — references another custom group
-#[derive(Debug, Clone, Deserialize)]
-pub struct CustomGroupConfig {
-    /// Display name of the proxy group
-    pub name: String,
-
-    /// Group type: "select", "url-test", "fallback", "load-balance"
-    #[serde(default = "default_custom_group_type")]
-    pub group_type: String,
-
-    /// Proxy membership: regex patterns (match proxy names) and/or [] directives
-    #[serde(default)]
-    pub proxies: Vec<String>,
-
-    /// Reference proxy-providers by name (subconverter-style `use:` field)
-    ///
-    /// When set, the group will include `use:` in its definition instead of
-    /// (or in addition to) `proxies:`. Proxy-providers must be defined in
-    /// the template or auto-generated.
-    #[serde(default)]
-    pub use_providers: Vec<String>,
-
-    /// Health-check URL (required for url-test / fallback)
-    pub url: Option<String>,
-
-    /// Health-check interval in seconds
-    #[serde(default = "default_group_interval")]
-    pub interval: u64,
-
-    /// Tolerance in ms (url-test only)
-    #[serde(default)]
-    pub tolerance: Option<u64>,
-
-    /// Load-balance strategy: "round-robin" or "consistent-hashing"
-    #[serde(default)]
-    pub strategy: Option<String>,
-
-    /// Lazy loading (don't health-check until first use)
-    #[serde(default = "default_true")]
-    pub lazy: bool,
-
-    /// Disable UDP for this group
-    #[serde(default)]
-    pub disable_udp: bool,
-}
-
-fn default_custom_group_type() -> String { "select".to_string() }
-fn default_group_interval() -> u64 { 300 }
-
-/// An external rule set that gets downloaded and converted to Clash rules
-#[derive(Debug, Clone, Deserialize)]
-pub struct RulesetConfig {
-    /// Target policy group (e.g. "Proxy", "DIRECT", "REJECT")
-    pub group: String,
-
-    /// URL or local file path of the rule set file (Surge / Clash / Quantumult X format)
-    ///
-    /// If the value starts with `http://` or `https://`, it's fetched via HTTP.
-    /// Otherwise it's treated as a local file path.
-    pub url: String,
-
-    /// Refresh interval in seconds (HTTP rulesets only)
-    #[serde(default = "default_ruleset_interval")]
-    pub interval: u64,
-
-    /// Explicit behavior: "domain", "ipcidr", "classical" (auto-detect if None)
-    #[serde(default)]
-    pub behavior: Option<String>,
-}
-
-impl RulesetConfig {
-    /// Returns true if this ruleset refers to a remote URL
-    pub fn is_remote(&self) -> bool {
-        self.url.starts_with("http://") || self.url.starts_with("https://")
-    }
-}
-
-fn default_ruleset_interval() -> u64 { 86400 }
-
-/// Custom base template for Clash output
-///
-/// The template should be a valid Clash config defining ALL sections.
-/// Dynamic sections (`proxies`, `proxy-groups`, `rules`, `rule-providers`,
-/// `proxy-providers`) should use `~` (null) placeholders that will be
-/// overwritten by the generator. If not specified, the embedded default
-/// template (`base/clash_default.yml`) is used — it follows the same
-/// full-template design with null placeholders for dynamic content.
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct TemplateConfig {
-    /// Path to a base Clash YAML template file
-    ///
-    /// Supports two styles:
-    /// 1. **YAML injection** (recommended): Placeholder sections use `~`
-    ///    (null) — the generator overwrites them with produced content.
-    /// 2. **Text substitution** (subconverter-compat): Use `{{proxy}}`,
-    ///    `{{proxy_group}}`, `{{rule}}` markers in the raw text — the
-    ///    generator replaces them serialized YAML sections.
-    ///
-    /// If not specified, the built-in `base/clash_default.yml` is used.
-    pub base: Option<String>,
-
-    /// Maximum number of inline rules before auto-converting to rule-provider
-    #[serde(default = "default_provider_threshold")]
-    pub provider_threshold: usize,
-
-    /// Auto-generate proxy-providers from domain subscription sources
-    ///
-    /// When enabled, proxies are grouped by their source domain name and
-    /// each group becomes a proxy-provider entry. Groups can then reference
-    /// the provider via the `use:` field instead of listing all proxies inline.
-    #[serde(default)]
-    pub auto_proxy_providers: bool,
-
-    /// Explicit proxy-provider definitions (subconverter-style)
-    ///
-    /// Each provider maps to a remote subscription URL. Groups reference
-    /// providers by name using the `use:` field.
-    #[serde(default)]
-    pub proxy_providers: Vec<ProxyProviderConfig>,
-
-    /// Additional Clash config key-value overrides (subconverter-style config add)
-    ///
-    /// These are merged into the final output AFTER the template is loaded,
-    /// allowing you to set or override any Clash config field without
-    /// creating a full template file.
-    ///
-    /// Example in TOML:
-    /// ```toml
-    /// [groups.free.template.overrides]
-    /// port = 9999
-    /// "socks-port" = 9998
-    /// "external-controller" = "0.0.0.0:9090"
-    /// "ipv6" = true
-    /// ```
-    #[serde(default)]
-    pub overrides: Option<std::collections::HashMap<String, toml::Value>>,
-}
-
-/// A single proxy provider definition — aligns with subconverter's proxy-provider format.
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProxyProviderConfig {
-    /// Provider name (referenced by groups via `use:`)
-    pub name: String,
-
-    /// Provider type: "http" for remote URL, "file" for local path
-    #[serde(default = "default_provider_type")]
-    pub provider_type: String,
-
-    /// Remote subscription URL (required for type: http)
-    pub url: Option<String>,
-
-    /// Local cache path for the provider data
-    #[serde(default = "default_provider_path")]
-    pub path: String,
-
-    /// Refresh interval in seconds
-    #[serde(default = "default_provider_interval")]
-    pub interval: u64,
-
-    /// Health-check configuration
-    #[serde(default)]
-    pub health_check: Option<ProviderHealthCheck>,
-}
-
-fn default_provider_type() -> String { "http".to_string() }
-fn default_provider_path() -> String { "./proxy_providers/".to_string() }
-fn default_provider_interval() -> u64 { 86400 }
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct ProviderHealthCheck {
-    /// Enable health check for this provider
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    /// Health check URL
-    #[serde(default = "default_health_check_url")]
-    pub url: String,
-
-    /// Health check interval in seconds
-    #[serde(default = "default_health_check_interval")]
-    pub interval: u64,
-}
-
-impl Default for ProviderHealthCheck {
-    fn default() -> Self {
-        Self {
-            enable: true,
-            url: default_health_check_url(),
-            interval: 300,
-        }
-    }
-}
-
-fn default_health_check_url() -> String { "https://www.gstatic.com/generate_204".to_string() }
-fn default_health_check_interval() -> u64 { 300 }
-
-fn default_provider_threshold() -> usize { 50 }
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct SmartGroupConfig {
-    /// Master switch — enables all smart features
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    // ── Grouping Strategy ──
-
-    /// Auto-create per-region url-test proxy groups
-    #[serde(default = "default_true")]
-    pub region_groups: bool,
-
-    /// Type for auto groups: "url-test" / "fallback" / "load-balance"
-    #[serde(default = "default_smart_auto_type")]
-    pub auto_group_type: String,
-
-    /// Whether to include a global fallback group as the ultimate backup
-    #[serde(default = "default_true")]
-    pub fallback_group: bool,
-
-    /// Whether to include a load-balance group (all proxies, random/round-robin)
-    #[serde(default)]
-    pub load_balance_group: bool,
-
-    // ── Rule Strategy ──
-
-    /// Whether to generate smart routing rules
-    #[serde(default = "default_true")]
-    pub generate_rules: bool,
-
-    /// AI services (ChatGPT, Claude, Gemini, Copilot, etc.) → Proxy
-    #[serde(default = "default_true")]
-    pub ai_rules: bool,
-
-    /// Streaming media (Netflix, Disney+, HBO, YouTube, Bilibili, etc.)
-    #[serde(default = "default_true")]
-    pub streaming_rules: bool,
-
-    /// Social media (Twitter/X, Instagram, TikTok, Facebook, Telegram)
-    #[serde(default = "default_true")]
-    pub social_rules: bool,
-
-    /// Gaming (Steam, Epic, PlayStation, Xbox, Nintendo)
-    #[serde(default)]
-    pub gaming_rules: bool,
-
-    /// Banking & financial sites → Direct
-    #[serde(default)]
-    pub banking_rules: bool,
-
-    /// Chinese mainland sites & IPs → Direct
-    #[serde(default = "default_true")]
-    pub direct_rules: bool,
-
-    /// Extra user-defined rules (each line is a Clash rule)
-    #[serde(default)]
-    pub custom_rules: Vec<String>,
-}
-
-impl Default for SmartGroupConfig {
-    fn default() -> Self {
-        Self {
-            enable: true,
-            region_groups: true,
-            auto_group_type: "url-test".to_string(),
-            fallback_group: true,
-            load_balance_group: false,
-            generate_rules: true,
-            ai_rules: true,
-            streaming_rules: true,
-            social_rules: true,
-            gaming_rules: false,
-            banking_rules: false,
-            direct_rules: true,
-            custom_rules: Vec::new(),
-        }
-    }
-}
-
-fn default_smart_auto_type() -> String { "url-test".to_string() }
-
-impl SmartGroupConfig {
-    /// Region codes we build auto-groups for (sorted by priority)
-    pub fn regions() -> &'static [&'static str] {
-        &[
-            "HK", "TW", "JP", "KR", "SG", "US", "GB", "DE", "FR",
-            "CA", "AU", "IN", "RU", "NL", "SE", "NO", "FI", "DK",
-            "CH", "IT", "ES", "AE", "SA", "TH", "VN", "MY", "PH",
-            "ID", "MO", "BR", "MX", "AR", "ZA", "TR", "IL", "PL",
-            "CZ", "UA", "RO", "GR", "HU", "EG", "NG", "KE",
-        ]
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct RegularizeConfig {
-    #[serde(default = "default_true")]
-    pub enable: bool,
-
-    #[serde(default = "default_true")]
-    pub locate: bool,
-
-    #[serde(default)]
-    pub residential: bool,
-
-    #[serde(default = "default_regularize_bits")]
-    pub bits: usize,
-}
-
-fn default_regularize_bits() -> usize { 2 }
-
-
-#[derive(Debug, Clone, Deserialize)]
-#[serde(tag = "engine")]
-pub enum StorageConfig {
-    #[serde(rename = "local")]
-    Local {
-        items: HashMap<String, LocalStorageItem>,
-    },
-}
-
-#[derive(Debug, Clone, Deserialize, Default)]
-pub struct LocalStorageItem {
-    #[serde(default)]
-    pub fileid: Option<String>,
-    #[serde(default, alias = "folderid")]
-    pub dir: Option<String>,
-}
-
-
-#[derive(Debug, Clone, Deserialize)]
 pub struct SettingsConfig {
     #[serde(default = "default_concurrency")]
     pub concurrency: usize,
@@ -1182,28 +757,11 @@ pub struct SettingsConfig {
     #[serde(default)]
     pub invisible: bool,
 
-    #[serde(default)]
-    pub validate_binary: Option<String>,
-
-    /// Append Subscription-UserInfo comments to generated output (default: true)
-    #[serde(default = "default_true")]
-    pub append_userinfo: bool,
-
     /// Path to save raw collected proxy nodes (JSON Lines format).
     /// Each line is a raw ProxyNode parsed from subscriptions/crawling,
     /// saved before health check and dedup. Leave empty to disable.
     #[serde(default)]
     pub raw_output: Option<String>,
-
-    // ── Global Node Filtering (applied to all groups, before per-group preprocess) ──
-
-    /// Global include filter: keep only proxies whose name matches this regex
-    #[serde(default)]
-    pub filter_include: String,
-
-    /// Global exclude filter: exclude proxies whose name matches this regex
-    #[serde(default)]
-    pub filter_exclude: String,
 
     // ── Cache ──
 
@@ -1222,11 +780,7 @@ impl Default for SettingsConfig {
             test_url: "https://www.gstatic.com/generate_204".to_string(),
             overwrite: false,
             invisible: false,
-            validate_binary: None,
-            append_userinfo: true,
             raw_output: None,
-            filter_include: String::new(),
-            filter_exclude: String::new(),
             cache: CacheSettings::default(),
         }
     }
@@ -1277,57 +831,6 @@ fn default_retry() -> usize { 3 }
 fn default_test_url() -> String { "https://www.gstatic.com/generate_204".to_string() }
 
 // ── Pre-processing Pipeline ───────────────────────────────────────────────
-
-/// Configuration for the proxy pre-processing pipeline.
-///
-/// Applied after GeoIP regularize but before Clash output generation, in this order:
-/// 1. include/exclude regex filter
-/// 2. deprecated encryption filter
-/// 3. regex rename rules
-/// 4. append_proxy_type prefix
-/// 5. sort
-#[derive(Debug, Clone, Default, Deserialize)]
-pub struct PreprocessConfig {
-    /// Regex rename rules — each rule replaces proxy name via `regex::Regex`
-    #[serde(default)]
-    pub rename: Vec<RenameRule>,
-
-    /// If true, prepend the protocol type (e.g. "SS-", "Trojan-") to proxy names
-    #[serde(default)]
-    pub append_proxy_type: bool,
-
-    /// Sort key: "name", "type", "latency" (default: no sort)
-    #[serde(default)]
-    pub sort_by: String,
-
-    /// Sort order: "asc" (default) or "desc"
-    #[serde(default = "default_sort_order")]
-    pub sort_order: String,
-
-    /// Filter out proxies using deprecated/weak encryption
-    #[serde(default)]
-    pub filter_deprecated: bool,
-
-    /// Keep only proxies whose name matches this regex
-    #[serde(default)]
-    pub include: String,
-
-    /// Exclude proxies whose name matches this regex (applied after include)
-    #[serde(default)]
-    pub exclude: String,
-}
-
-fn default_sort_order() -> String { "asc".to_string() }
-
-/// A single regex rename rule: `pattern` → `replacement`
-#[derive(Debug, Clone, Deserialize)]
-pub struct RenameRule {
-    /// Regex pattern to match against the proxy name
-    pub pattern: String,
-
-    /// Replacement string (supports `$1`, `$2`, etc. capture group references)
-    pub replace: String,
-}
 
 impl AppConfig {
     pub fn from_file(path: &str) -> crate::error::Result<Self> {

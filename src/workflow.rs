@@ -1,6 +1,4 @@
-use std::collections::HashMap;
 use std::future::Future;
-use std::path::Path;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -8,12 +6,8 @@ use tokio::sync::Semaphore;
 
 use crate::airport;
 use crate::alive;
-use crate::builder;
 use crate::cache;
 use crate::config::*;
-use crate::convert;
-use crate::preprocess;
-use crate::validate;
 
 /// Initialize persistent cache from config settings
 fn init_cache_from_config(settings: &SettingsConfig) {
@@ -28,12 +22,10 @@ fn init_cache_from_config(settings: &SettingsConfig) {
 use crate::crawl;
 use crate::deduce;
 use crate::error::*;
-use crate::geoip;
 use crate::parser;
 use crate::proxy::*;
 use crate::proxy_log::ProxyLogger;
 use crate::renewal;
-use crate::storage::*;
 use crate::subscribe;
 
 // ── Crawl mode ──────────────────────────────────────────────────────────
@@ -45,9 +37,8 @@ pub async fn run_crawl(config_path: &str, concurrency: usize) -> Result<()> {
 
 async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     log::info!(
-        "Loaded config with {} domains, {} groups",
+        "Loaded config with {} domains",
         config.domains.len(),
-        config.groups.len()
     );
 
     init_cache_from_config(&config.settings);
@@ -55,14 +46,15 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
     let direct_client = build_direct_client()?;
 
-    let proxy_log = ProxyLogger::new("proxy_collection.log");
-    log::info!("Proxy collection log: proxy_collection.log");
-
     // Resolve persist dir once, used by URL output, pipeline config, and final YAML
     let persist_dir = config.crawl.persist_dir
         .clone()
         .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
     let _ = std::fs::create_dir_all(&persist_dir);
+
+    let proxy_log_path = persist_dir.join("proxy_collection.log");
+    let proxy_log = ProxyLogger::new(&proxy_log_path.to_string_lossy());
+    log::info!("Proxy collection log: {:?}", proxy_log_path);
 
     // 1. Renewal flow (serial — stays before crawl + pipeline)
     process_renewals_all(&client, config).await?;
@@ -130,85 +122,7 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     Ok(())
 }
 
-// ── Convert mode ─────────────────────────────────────────────────────────
 
-/// Read previously-persisted proxies and convert them to Clash output.
-pub async fn run_convert(config_path: &str) -> Result<()> {
-    let config = AppConfig::from_file(config_path)?;
-    run_convert_inner(&config).await
-}
-
-async fn run_convert_inner(config: &AppConfig) -> Result<()> {
-    log::info!("Loaded config with {} groups", config.groups.len());
-
-    init_cache_from_config(&config.settings);
-
-    let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
-
-    // Read previously persisted proxies from crawl mode
-    let persist_dir = config.crawl.persist_dir
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
-    let store = crawl::PersistStore::new(persist_dir);
-    let mut all_enriched = store.load_final_proxies()?;
-    log::info!("Loaded {} enriched proxies", all_enriched.len());
-
-    // Name conflict resolution
-    deduce::resolve_enriched_name_conflicts(&mut all_enriched);
-
-    // Build storage backends
-    let storage = match &config.storage {
-        Some(s) => create_storage(s)?,
-        None => {
-            log::info!("No storage configured, skipping output");
-            return Ok(());
-        }
-    };
-
-    // Per-group processing (with smart/legacy converter)
-    for (name, group) in &config.groups {
-        process_group_smart(
-            &client,
-            group,
-            &all_enriched,
-            &storage,
-            config.settings.append_userinfo,
-            Some(&config.settings),
-        ).await?;
-        log::info!("Group {} processed", name);
-    }
-
-    log::info!("Convert completed");
-    Ok(())
-}
-
-// ── Combined workflow (crawl + convert) ──────────────────────────────────
-
-#[allow(dead_code)]
-async fn crawl_and_discover(
-    client: &reqwest::Client,
-    config: &AppConfig,
-) -> Result<Vec<String>> {
-    let proxy = config.settings.socks_proxy.as_deref();
-    let mut urls = run_crawlers(client, config).await?;
-
-    for domain in &config.domains {
-        if domain.coupon.is_empty() && !domain.secure {
-            continue;
-        }
-        match process_airport_register(client, domain, proxy).await {
-            Ok(new_urls) => {
-                log::info!("Airport {}: got {} subscribe URLs via auto-reg", domain.name, new_urls.len());
-                urls.extend(new_urls);
-            }
-            Err(e) => log::warn!("Airport {} auto-register skipped: {}", domain.name, e),
-        }
-    }
-    // Dedup crawler + airport URLs to avoid fetching the same URL twice
-    urls.sort();
-    urls.dedup();
-    Ok(urls)
-}
 
 /// Crawl all sources and send discovered subscription URLs into a channel.
 ///
@@ -745,280 +659,8 @@ async fn process_domain_subscriptions(
     Ok((enriched, raw_nodes))
 }
 
-/// Legacy per-domain health-check path (used by `check_alive_only`).
-async fn process_domain_enriched(
-    client: &reqwest::Client,
-    domain: &DomainConfig,
-    settings: &SettingsConfig,
-) -> Result<Vec<EnrichedProxy>> {
-    let mut proxies = fetch_domain_proxies(client, domain, settings).await?;
-    deduce::resolve_name_conflicts(&mut proxies);
 
-    log::info!(
-        "Running health check for domain: {} ({} proxies)",
-        domain.name,
-        proxies.len()
-    );
-    let results = alive::check_alive_batch(proxies, settings.concurrency).await;
-    let alive_count = results.iter().filter(|r| r.alive).count();
-    log::info!("Domain {}: {}/{} proxies alive", domain.name, alive_count, results.len());
 
-    Ok(results
-        .into_iter()
-        .filter(|r| r.alive)
-        .map(|r| EnrichedProxy::new(r.node, r.latency_ms))
-        .collect())
-}
-
-// ── Legacy fallback ────────────────────────────────────────────────────────
-
-fn legacy_convert_fallback(enriched: &[EnrichedProxy], target_name: &str) -> Result<String> {
-    let plain: Vec<ProxyNode> = enriched.iter().map(|ep| ep.node.clone()).collect();
-    log::info!(
-        "Legacy converting {} proxies for target '{}'",
-        plain.len(),
-        target_name
-    );
-    convert::convert_proxies_to_clash(&plain)
-}
-
-// ── Group Processing with Smart Config ────────────────────────────────────
-
-async fn process_group_smart(
-    client: &reqwest::Client,
-    group: &GroupConfig,
-    all_enriched: &[EnrichedProxy],
-    storage: &HashMap<String, Box<dyn StorageBackend>>,
-    append_userinfo: bool,
-    settings: Option<&SettingsConfig>,
-) -> Result<()> {
-    // Step 0a: Apply global include/exclude filter (from settings)
-    let enriched = if let Some(s) = settings {
-        let has_filter = !s.filter_include.is_empty() || !s.filter_exclude.is_empty();
-        if has_filter {
-            let before = all_enriched.len();
-            let filtered = preprocess::apply_global_filter(
-                all_enriched.to_vec(),
-                &s.filter_include,
-                &s.filter_exclude,
-            );
-            log::info!(
-                "Global filter: {} → {} proxies ({} removed)",
-                before,
-                filtered.len(),
-                before - filtered.len()
-            );
-            filtered
-        } else {
-            all_enriched.to_vec()
-        }
-    } else {
-        all_enriched.to_vec()
-    };
-
-    // Step 0b: Remove old emoji from proxy names if configured
-    let enriched = if group.remove_old_emoji {
-        let before = enriched.len();
-        let cleaned = preprocess::remove_old_emoji_from_proxies(enriched);
-        log::info!("Removed old emoji from {} proxies", before);
-        cleaned
-    } else {
-        enriched
-    };
-
-    // Step 1: GeoIP regularize
-    let enriched = if let Some(ref reg) = group.regularize {
-        if reg.enable {
-            log::info!(
-                "Applying GeoIP regularize for group with locate={}, residential={}",
-                reg.locate,
-                reg.residential
-            );
-            geoip::regularize_enriched_proxies(client, enriched, reg).await?
-        } else {
-            enriched
-        }
-    } else {
-        enriched
-    };
-
-    // Step 1b: Strip GeoIP emoji from proxies when group.emoji is disabled
-    let enriched: Vec<EnrichedProxy> = if !group.emoji {
-        enriched.into_iter().map(|mut ep| {
-            ep.emoji.clear();
-            ep
-        }).collect()
-    } else {
-        enriched
-    };
-
-    // Step 2: Apply per-group pre-processing pipeline (rename, filter, sort, etc.)
-    let enriched = if let Some(ref pp) = group.preprocess {
-        log::info!("Applying pre-processing pipeline to {} proxies", enriched.len());
-        preprocess::preprocess_proxies(enriched, pp)
-    } else {
-        enriched
-    };
-
-    // Decide which converter to use
-    let has_advanced = !group.custom_groups.is_empty()
-        || !group.rulesets.is_empty()
-        || group.template.is_some();
-
-    for target_name in group.targets.values() {
-        let content = if has_advanced {
-            log::info!(
-                "Building Clash config with custom groups/rulesets for target '{}'",
-                target_name
-            );
-            let gen_cfg = builder::ClashGenerationConfig {
-                enriched: &enriched,
-                smart: group.smart.as_ref(),
-                custom_groups: &group.custom_groups,
-                rulesets: &group.rulesets,
-                template: group.template.as_ref(),
-                test_url: "https://www.gstatic.com/generate_204",
-                domain_proxies: None,
-            };
-            builder::build_clash_config(client, gen_cfg).await?
-        } else if let Some(ref smart) = group.smart {
-            if smart.enable {
-                log::info!(
-                    "Smart converting {} proxies for target '{}'",
-                    enriched.len(),
-                    target_name
-                );
-                convert::convert_enriched_to_clash(&enriched, Some(smart))?
-            } else {
-                legacy_convert_fallback(&enriched, target_name)?
-            }
-        } else {
-            log::info!(
-                "Smart converting {} proxies for target '{}' (default config)",
-                enriched.len(),
-                target_name
-            );
-            convert::convert_enriched_to_clash(&enriched, Some(&SmartGroupConfig::default()))?
-        };
-
-        // Prepend subscription usage info as YAML comments if available
-        let content = if append_userinfo && crate::userinfo::has_data() {
-            let mut with_comments = String::new();
-            with_comments.push_str("# ── Subscription Usage ─────────────────────────────────────\n");
-            with_comments.push_str(&crate::userinfo::format_all());
-            with_comments.push('\n');
-            with_comments.push_str("# ────────────────────────────────────────────────────────────\n");
-            with_comments.push_str(&content);
-            with_comments
-        } else {
-            content
-        };
-
-        if let Some(backend) = storage.get(target_name) {
-            backend.write(&content, target_name).await?;
-            log::info!("Pushed to '{}'", target_name);
-
-            // Optional: validate generated config with mihomo -t
-            if let Some(s) = settings {
-                let binary_path = s.validate_binary.as_deref().map(Path::new);
-                if let Ok(bin_path) = validate::find_validate_binary(binary_path) {
-                    let temp_dir = std::env::temp_dir()
-                        .join(format!("proxy-validate-output-{}", std::process::id()));
-                    let _ = std::fs::create_dir_all(&temp_dir);
-                    let config_path = temp_dir.join("config.yaml");
-                    if std::fs::write(&config_path, &content).is_ok() {
-                        match validate::validate_clash_config(&config_path, Some(&bin_path)) {
-                            Ok(validate::ValidateResult::Valid { version }) => {
-                                log::info!("Config '{}' validated OK ({})", target_name, version);
-                            }
-                            Ok(other) => {
-                                log::warn!("Config '{}' validation unexpected Ok: {:?}", target_name, other);
-                            }
-                            Err(validate::ValidateResult::Invalid { errors, .. }) => {
-                                log::warn!(
-                                    "Config '{}' validation FAILED ({} errors): {}",
-                                    target_name,
-                                    errors.len(),
-                                    errors.join("; ")
-                                );
-                            }
-                            Err(other) => {
-                                log::warn!("Config '{}' validation error: {:?}", target_name, other);
-                            }
-                        }
-                    }
-                    let _ = std::fs::remove_dir_all(&temp_dir);
-                }
-            }
-        } else {
-            log::warn!("No storage backend found for target: {}", target_name);
-        }
-    }
-    Ok(())
-}
-
-// ── Health-Check Only Mode ────────────────────────────────────────────────
-
-pub async fn check_alive_only(config_path: &str) -> Result<()> {
-    let config = AppConfig::from_file(config_path)?;
-    log::info!("Running health check only mode");
-
-    init_cache_from_config(&config.settings);
-    let direct_client = build_direct_client()?;
-
-    let mut all_enriched = Vec::new();
-    for (idx, domain) in config.domains.iter().enumerate() {
-        let source_id = (idx + 1) as u32;
-        log::info!("Check-only: re-validating proxies for domain {}", domain.name);
-        match process_domain_enriched(&direct_client, domain, &config.settings).await {
-            Ok(proxies) => {
-                let proxies: Vec<EnrichedProxy> = proxies
-                    .into_iter()
-                    .map(|mut ep| { ep.source_id = source_id; ep })
-                    .collect();
-                log::info!(
-                    "Domain {}: {} proxies alive after re-check",
-                    domain.name,
-                    proxies.len()
-                );
-                all_enriched.extend(proxies);
-            }
-            Err(e) => {
-                log::warn!(
-                    "Domain {} check error (may be expected in check mode): {}",
-                    domain.name,
-                    e
-                );
-            }
-        }
-    }
-
-    all_enriched = deduce::dedup_enriched(all_enriched);
-    deduce::resolve_enriched_name_conflicts(&mut all_enriched);
-
-    let storage = match &config.storage {
-        Some(s) => create_storage(s)?,
-        None => {
-            log::info!("No storage configured, skipping output in check mode");
-            return Ok(());
-        }
-    };
-    for (name, group) in &config.groups {
-        process_group_smart(
-            &build_reqwest_client(config.settings.socks_proxy.as_deref())?,
-            group,
-            &all_enriched,
-            &storage,
-            config.settings.append_userinfo,
-            Some(&config.settings),
-        )
-        .await?;
-        log::info!("Group {} processed", name);
-    }
-
-    log::info!("Health check completed");
-    Ok(())
-}
 
 // ── Helpers ───────────────────────────────────────────────────────────────
 

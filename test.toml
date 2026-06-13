@@ -293,125 +293,15 @@ enable = true
 username = "Pawdroid"
 repo_name = "Free-servers"
 commits = 5                               # 最近 commit 数
-exclude = ""
-push_to = ["free"]
 
 [[crawl.repositories]]
 enable = true
 username = "mksshare"
 repo_name = "mksshare.github.io"
 commits = 5
-exclude = ""
-push_to = ["free"]
 
 
 # ── 3. 输出分组 (Groups) ────────────────────────────────────────────────────
-# 定义输出文件的组配置，支持 Smart Group（智能分组）和自定义分组。
-
-[groups.free]                             # 组名（与 domain/crawl 中的 push_to 对应）
-emoji = true                              # 节点名前添加 emoji 国旗
-remove_old_emoji = false                  # 移除节点名中旧 emoji 前缀（GeoIP 之前执行）
-list = true                               # 生成节点列表
-
-[groups.free.targets]                     # 输出目标（一个组可输出到多个文件）
-clash = "free-clash"                      # Clash 格式 → [storage.items.free-clash]
-
-[groups.free.regularize]                  # 节点名字标准化
-enable = false
-locate = false                            # 根据 GeoIP 补充位置信息
-residential = false                       # 标记住宅 IP
-bits = 2                                  # 标准化精度
-
-[groups.free.smart]                       # 智能分组（按区域自动创建子组）
-enable = true
-region_groups = true                      # 按区域创建 Auto 组（HK Auto, JP Auto...）
-auto_group_type = "url-test"              # Auto 组类型: url-test / fallback / load-balance
-fallback_group = true                     # 创建全局故障转移组
-load_balance_group = false                # 创建全局负载均衡组
-generate_rules = true                     # 生成智能路由规则
-ai_rules = true                           # AI 服务 → Proxy
-streaming_rules = true                    # 流媒体 → Proxy
-social_rules = true                       # 社交平台 → Proxy
-gaming_rules = false                      # 游戏 → Proxy
-banking_rules = false                     # 银行 → DIRECT
-direct_rules = true                       # 国内 → DIRECT
-custom_rules = []                         # 自定义规则（每行一条 Clash 规则语法）
-
-# ── 自定义 Proxy Groups ──
-# 子转换器(subconverter)风格的正则匹配分组
-
-# 自定义「自动选择」组（regex 匹配代理名）
-[[groups.free.custom_groups]]
-name = "🇯🇵 日本"
-group_type = "url-test"
-proxies = ["(日|日本|JP|Japan)"]
-url = "https://www.gstatic.com/generate_204"
-interval = 300
-tolerance = 50
-lazy = true
-disable_udp = false
-
-# 策略组（select/手动选择）
-[[groups.free.custom_groups]]
-name = "🎬 流媒体"
-group_type = "select"
-proxies = [
-    "(日|日本|JP|Japan)",
-    "(新|新加坡|SG|Singapore)",
-    "(美|美国|US|United States)",
-    "(港|HK|Hong Kong)",          # 引用其他分组
-    "[]DIRECT",
-]
-
-# ── 外部规则集 (Rulesets) ──
-# 远程规则集自动下载并注入
-
-[[groups.free.rulesets]]
-group = "Proxy"                           # 策略组
-url = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/ProxyLite.ini"
-interval = 86400                          # 刷新间隔（秒）
-
-[[groups.free.rulesets]]
-group = "DIRECT"
-url = "https://raw.githubusercontent.com/ACL4SSR/ACL4SSR/master/Clash/LocalAreaNetwork.ini"
-interval = 86400
-
-# 内置规则集文件（从 base/rules/ 加载，使用绝对或相对路径）
-[[groups.free.rulesets]]
-group = "Proxy"
-url = "base/rules/ProxyGFWlist.list"
-
-[[groups.free.rulesets]]
-group = "DIRECT"
-url = "base/rules/ChinaDomain.list"
-
-[[groups.free.rulesets]]
-group = "DIRECT"
-url = "base/rules/ChinaIp.list"
-
-# [[groups.free.rulesets]]
-# group = "REJECT"
-# url = "base/rules/BanAD.list"
-
-# ── 模板覆盖 ──
-# [groups.free.template]
-# base = "templates/base.yaml"            # 自定义基础 YAML 模板路径
-# provider_threshold = 50                 # 规则达到此数时自动转为 rule-provider
-
-
-# ── 4. 存储配置 (Storage) ────────────────────────────────────────────────────
-# 支持本地文件存储。可扩展 S3/GCS 等（需实现 Storage trait）。
-
-[storage]
-engine = "local"
-
-[storage.items.free-clash]                # 对应 groups.free.targets.clash
-fileid = "crawl-output.yaml"
-folderid = "/tmp/crawl"
-
-[storage.items.test-out]                  # 第二个输出目标示例
-fileid = "test_output.yaml"
-folderid = "/tmp/proxy-test"
 
 
 # ── 5. 全局设置 (Settings) ──────────────────────────────────────────────────
@@ -424,6 +314,3 @@ retry = 3                                 # 重试次数
 test_url = "https://www.gstatic.com/generate_204"  # 连通性测试 URL
 overwrite = false                         # 是否覆盖已缓存节点
 invisible = false                         # 安静模式
-validate_binary = ""                      # Mihomo/Clash-Meta 二进制路径（用于配置校验）
-filter_include = ""                       # 全局节点包含过滤（正则，对所有组生效）
-filter_exclude = ""                       # 全局节点排除过滤（正则，对所有组生效）
