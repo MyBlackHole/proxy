@@ -22,8 +22,7 @@ const ROTATION_BYTES: u64 = 32 * 1024 * 1024;
 /// Directory layout:
 /// ```text
 /// <root>/
-///   collected_urls.txt   → all discovered URLs (audit trail)
-///   collected_bad_urls.txt→ unrecognised URLs (neither HTTP(S) nor proxy links)
+///   collected_urls.txt   → all discovered HTTP(S) subscribe URLs (audit trail)
 ///   fetcher/<sha256(url)>/
 ///     meta.json         → {"url":"...","size":N}
 ///     content.txt       → raw fetched body (plain text)

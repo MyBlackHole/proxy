@@ -95,11 +95,11 @@ mod tests {
 
     #[test]
     fn test_extract_subscribes_direct_proxy_links() {
+        // Proxy scheme URLs (vmess://, trojan://, etc.) are not extracted as
+        // subscribe URLs — they enter the pipeline via content parsing instead.
         let text = "vmess://eyJhZGQiOiIxLjIuMy40IiwicG9ydCI6NDQzfQ== trojan://password@1.2.3.4:443?peer=example.com";
         let results = extract_subscribes(text);
-        assert_eq!(results.len(), 2, "should extract vmess and trojan links");
-        assert!(results[0].starts_with("vmess://"));
-        assert!(results[1].starts_with("trojan://"));
+        assert!(results.is_empty(), "proxy links should not be extracted by extract_subscribes");
     }
 
     #[test]
@@ -119,19 +119,18 @@ mod tests {
 
     #[test]
     fn test_extract_subscribes_raw_proxy_line() {
+        // Raw IP:PORT addresses are not subscribe URLs.
         let text = "some text\n192.168.1.1:8080\nmore text\n";
         let results = extract_subscribes(text);
-        assert!(!results.is_empty(), "should extract raw IP:PORT lines");
-        assert!(results.contains(&"192.168.1.1:8080".to_string()));
+        assert!(results.is_empty(), "raw IP:PORT should not be extracted");
     }
 
     #[test]
     fn test_extract_subscribes_raw_proxy_line_with_protocol() {
+        // Protocol-prefixed proxy addresses are not subscribe URLs.
         let text = "socks5://10.0.0.1:1080\nhttp://192.168.1.100:3128";
         let results = extract_subscribes(text);
-        assert_eq!(results.len(), 2, "should extract protocol-prefixed proxy lines");
-        assert!(results.contains(&"socks5://10.0.0.1:1080".to_string()));
-        assert!(results.contains(&"http://192.168.1.100:3128".to_string()));
+        assert!(results.is_empty(), "protocol-prefixed proxy addresses should not be extracted");
     }
 
     #[test]
@@ -152,7 +151,7 @@ mod tests {
 
     #[test]
     fn test_extract_subscribes_no_duplicates() {
-        let text = "vmess://abc123def456\nvmess://abc123def456";
+        let text = "https://example.com/api/v1/client/subscribe?token=abcdef1234567890abcdef1234567890\nhttps://example.com/api/v1/client/subscribe?token=abcdef1234567890abcdef1234567890";
         let results = extract_subscribes(text);
         assert_eq!(results.len(), 1, "should deduplicate results");
     }

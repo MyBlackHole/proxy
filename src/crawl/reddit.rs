@@ -73,8 +73,10 @@ mod tests {
 
     #[test]
     fn test_extract_proxy_links_from_reddit_text() {
+        // Proxy links found in Reddit text are extracted by the pipeline's
+        // extractor stage from fetched content, not by extract_subscribes.
         let text = "Check out this free proxy: ss://YWVzLTI1Ni1nY206dGVzdEAxMjcuMC4wLjE6ODM4OA==\nAlso try trojan://password@example.com:443";
         let results = extract_subscribes(text);
-        assert!(!results.is_empty(), "should extract proxy links");
+        assert!(results.is_empty(), "proxy links are not subscribe URLs");
     }
 }

@@ -124,18 +124,11 @@ pub async fn run_pipeline(
 
     // ── Inject initial URLs ────────────────────────────────────────
     for url in initial_urls {
-        if url.starts_with("http://") || url.starts_with("https://") {
-            work_counter.fetch_add(1, Ordering::SeqCst);
-            let _ = url_tx.send(CrawlTask {
-                url: url.clone(),
-                remaining: config.nested_max_rounds,
-            });
-        } else if let Ok(node) = parser::parse_proxy_url(url) {
-            // Direct proxy link: send straight to validator
-            let _ = proxy_tx.send(node);
-        } else {
-            log::debug!("[pipeline] skipping unrecognised URL: {url}");
-        }
+        work_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = url_tx.send(CrawlTask {
+            url: url.clone(),
+            remaining: config.nested_max_rounds,
+        });
     }
 
     // ── Collect results ────────────────────────────────────────────
@@ -224,21 +217,18 @@ pub async fn run_pipeline_stream(
 
     // ── Ingest-as-watcher task (replaces run_pipeline's separate watcher) ──
     //
-    // Phase 1 — forward: read external rx → classify & route:
-    //   - HTTP(S)   → url_tx (normal pipeline: fetch → extract → validate)
-    //   - proxy link → proxy_tx (shortcut: parse → validate)
-    //   - other     → collected_bad_urls.txt (log only)
-    // Phase 2 — drain: external rx exhausted → poll work_counter → shutdown
+    // Phase 1 — forward: read external rx → url_tx, write url_log
+    // Phase 2 — drain:   external rx exhausted → poll work_counter → shutdown
     //
-    // This eliminates the classic streaming race condition where a
-    // time-based watcher could fire before the first URL arrives.
+    // All incoming URLs are HTTP(S) subscribe URLs (proxy links are never
+    // injected as pipeline URLs — they are extracted from content by the
+    // extractor stage).  This eliminates the classic streaming race condition
+    // where a time-based watcher could fire before the first URL arrives.
     let ingest_work = Arc::clone(&work_counter);
     let ingest_url_tx = url_tx.clone();
-    let ingest_proxy_tx = proxy_tx;
     let ingest_shutdown_tx = shutdown_tx.clone();
     let remaining = config.nested_max_rounds;
     let url_log_path = persist_dir.join("collected_urls.txt");
-    let bad_url_path = persist_dir.join("collected_bad_urls.txt");
 
     let ingest_handle = tokio::spawn(async move {
         let mut url_log = match std::fs::File::create(&url_log_path) {
@@ -248,40 +238,18 @@ pub async fn run_pipeline_stream(
                 None
             }
         };
-        let mut bad_log = match std::fs::File::create(&bad_url_path) {
-            Ok(f) => Some(f),
-            Err(e) => {
-                log::warn!("[pipeline] cannot create collected_bad_urls.txt: {e}");
-                None
-            }
-        };
 
-        // Phase 1: Ingest external URLs (streaming ingress)
+        // Phase 1: Forward external URLs (streaming ingress)
         while let Some(url) = external_url_rx.recv().await {
-            // Always log to collected_urls.txt (audit trail).
+            ingest_work.fetch_add(1, Ordering::SeqCst);
+            let _ = ingest_url_tx.send(CrawlTask {
+                url: url.clone(),
+                remaining,
+            });
             if let Some(ref mut f) = url_log
                 && let Err(e) = writeln!(f, "{url}")
             {
                 log::warn!("[pipeline] failed to write collected_urls.txt: {e}");
-            }
-
-            if url.starts_with("http://") || url.starts_with("https://") {
-                // Normal pipeline: fetch → extract → validate
-                ingest_work.fetch_add(1, Ordering::SeqCst);
-                let _ = ingest_url_tx.send(CrawlTask {
-                    url,
-                    remaining,
-                });
-            } else if let Ok(node) = parser::parse_proxy_url(&url) {
-                // Direct proxy link: parse → validate (skip fetch + extract)
-                let _ = ingest_proxy_tx.send(node);
-            } else {
-                // Unrecognised URL → bad URL log
-                if let Some(ref mut f) = bad_log
-                    && let Err(e) = writeln!(f, "{url}")
-                {
-                    log::warn!("[pipeline] failed to write collected_bad_urls.txt: {e}");
-                }
             }
         }
         log::info!("[pipeline] external URL source exhausted; waiting for pipeline drain");
