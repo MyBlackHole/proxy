@@ -16,7 +16,7 @@ pub enum SubscriptionFormat {
     Unknown,
 }
 
-const PROXY_SCHEMES: &[&str] = &["ss://", "ssr://", "vmess://", "trojan://", "vless://", "hysteria://", "hysteria2://", "hy2://", "tuic://", "snell://", "socks5://", "http://", "https://", "anytls://", "wireguard://"];
+pub const PROXY_SCHEMES: &[&str] = &["ss://", "ssr://", "vmess://", "trojan://", "vless://", "hysteria://", "hysteria2://", "hy2://", "tuic://", "snell://", "socks5://", "http://", "https://", "anytls://", "wireguard://"];
 
 fn is_likely_base64(s: &str) -> bool {
     if s.len() < 10 { return false; }

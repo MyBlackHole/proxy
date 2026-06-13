@@ -26,7 +26,7 @@ impl ContentExtractor for SubscriptionExtractor {
     }
 
     fn extract_sub_sources(&self, content: &str) -> Vec<String> {
-        super::extract_subscribes(content)
+        super::extract_subscribes(content, &mut vec![])
     }
 }
 

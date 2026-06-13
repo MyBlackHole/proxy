@@ -8,6 +8,7 @@ use crate::airport;
 use crate::alive;
 use crate::cache;
 use crate::config::*;
+use crate::proxy::ProxyNode;
 
 /// Initialize persistent cache from config settings
 fn init_cache_from_config(settings: &SettingsConfig) {
@@ -75,6 +76,7 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     //    contains non-Send resources (rand::thread_rng in mailtm).
     //    Both futures run on the same task — no Send bound needed.
     let (crawl_tx, url_rx) = mpsc::unbounded_channel();
+    let (inline_tx, mut inline_rx) = mpsc::unbounded_channel::<ProxyNode>();
 
     let pipeline_config = crawl::PipelineConfig {
         fetch_concurrency: concurrency,
@@ -85,7 +87,7 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     };
 
     let (crawl_result, crawled_enriched) = tokio::join!(
-        crawl_and_discover_stream(&client, config, crawl_tx),
+        crawl_and_discover_stream(&client, config, crawl_tx, inline_tx),
         crawl::run_pipeline_stream(&direct_client, &pipeline_config, url_rx),
     );
 
@@ -96,6 +98,23 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
 
     proxy_log.log_enriched_batch("crawl", &crawled_enriched);
     all_enriched.extend(crawled_enriched);
+
+    let inline_proxies: Vec<ProxyNode> = {
+        let mut v = Vec::new();
+        while let Ok(p) = inline_rx.try_recv() { v.push(p); }
+        v
+    };
+    if !inline_proxies.is_empty() {
+        log::info!("Validating {} inline proxies...", inline_proxies.len());
+        let results = alive::check_alive_batch(inline_proxies, concurrency).await;
+        let alive_count = results.iter().filter(|r| r.alive).count();
+        log::info!("{}/{} inline proxies alive", alive_count, results.len());
+        for r in results {
+            if r.alive {
+                all_enriched.push(EnrichedProxy::new(r.node, r.latency_ms));
+            }
+        }
+    }
 
     // 4. Global dedup + name conflict resolution on EnrichedProxy
     log::info!("Total enriched proxies before dedup: {}", all_enriched.len());
@@ -134,9 +153,10 @@ async fn crawl_and_discover_stream(
     client: &reqwest::Client,
     config: &AppConfig,
     url_tx: mpsc::UnboundedSender<String>,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<()> {
     let proxy = config.settings.socks_proxy.as_deref();
-    let urls = run_crawlers(client, config).await?;
+    let urls = run_crawlers(client, config, inline_tx).await?;
     for url in urls {
         let _ = url_tx.send(url);
     }
@@ -175,6 +195,7 @@ async fn process_renewals_all(
 async fn run_crawlers(
     client: &reqwest::Client,
     config: &AppConfig,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let crawl_cfg = &config.crawl;
     if !crawl_cfg.enable {
@@ -195,17 +216,18 @@ async fn run_crawlers(
         handles: &mut Vec<tokio::task::JoinHandle<Vec<String>>>,
         client: &reqwest::Client,
         name: &str,
+        inline_tx: mpsc::UnboundedSender<ProxyNode>,
         f: F,
     )
     where
-        F: FnOnce(reqwest::Client) -> Fut + Send + 'static,
+        F: FnOnce(reqwest::Client, mpsc::UnboundedSender<ProxyNode>) -> Fut + Send + 'static,
         Fut: Future<Output = Result<Vec<String>>> + Send + 'static,
     {
         let client = client.clone();
         let name = name.to_string();
         handles.push(tokio::spawn(async move {
             log::info!("Crawling {}", name);
-            match f(client).await {
+            match f(client, inline_tx).await {
                 Ok(found) => {
                     log::info!("{}: {} subscribe URLs", name, found.len());
                     found
@@ -223,8 +245,9 @@ async fn run_crawlers(
         for name in crawl_cfg.telegram.users.keys() {
             let name = name.clone();
             let pages = crawl_cfg.telegram.pages;
-            spawn_crawler(&mut handles, &client, &format!("Telegram channel: {}", name), move |client| async move {
-                crawl::crawl_telegram(&client, &name, pages).await
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, &format!("Telegram channel: {}", name), inline_tx, move |client, inline_tx| async move {
+                crawl::crawl_telegram(&client, &name, pages, inline_tx).await
             });
         }
 
@@ -232,8 +255,9 @@ async fn run_crawlers(
         if crawl_cfg.telegram.search_enable && !crawl_cfg.telegram.search_query.is_empty() {
             let search_query = crawl_cfg.telegram.search_query.clone();
             let search_pages = crawl_cfg.telegram.search_pages;
-            spawn_crawler(&mut handles, &client, "Telegram search", move |client| async move {
-                crawl::crawl_telegram_search(&client, &search_query, search_pages).await
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "Telegram search", inline_tx, move |client, inline_tx| async move {
+                crawl::crawl_telegram_search(&client, &search_query, search_pages, inline_tx).await
             });
         }
     }
@@ -245,8 +269,9 @@ async fn run_crawlers(
             let query = crawl_cfg.github.query.clone();
             let pages = crawl_cfg.github.pages;
             let token = gh_token.clone();
-            spawn_crawler(&mut handles, &client, "GitHub query", move |client| async move {
-                crawl::crawl_github(&client, &query, pages, &token).await
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "GitHub query", inline_tx, move |client, inline_tx| async move {
+                crawl::crawl_github(&client, &query, pages, &token, inline_tx).await
             });
         }
 
@@ -256,10 +281,12 @@ async fn run_crawlers(
                 .map(|(k, v)| (k.clone(), v.sub.clone()))
                 .collect();
             let token = gh_token.clone();
-            spawn_crawler(&mut handles, &client, "GitHub users", move |client| async move {
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "GitHub users", inline_tx, move |client, inline_tx| async move {
                 let mut urls = Vec::new();
                 for (username, sub) in &users {
-                    match crawl::crawl_github_repo(&client, username, sub, 3, &token).await {
+                    let inline_tx = inline_tx.clone();
+                    match crawl::crawl_github_repo(&client, username, sub, 3, &token, inline_tx).await {
                         Ok(found) => {
                             log::info!("GitHub user {}: {} subscribe URLs", username, found.len());
                             urls.extend(found);
@@ -275,14 +302,16 @@ async fn run_crawlers(
         if !crawl_cfg.github.search_repos.is_empty() {
             let search_repos: Vec<String> = crawl_cfg.github.search_repos.clone();
             let token = gh_token.clone();
-            spawn_crawler(&mut handles, &client, "GitHub repos", move |client| async move {
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "GitHub repos", inline_tx, move |client, inline_tx| async move {
                 let mut urls = Vec::new();
                 for repo in &search_repos {
                     let parts: Vec<&str> = repo.split('/').collect();
                     if parts.len() >= 2 {
                         let owner = parts[parts.len() - 2];
                         let repo_name = parts[parts.len() - 1];
-                        match crawl::crawl_github_repo(&client, owner, repo_name, 3, &token).await {
+                        let inline_tx = inline_tx.clone();
+                        match crawl::crawl_github_repo(&client, owner, repo_name, 3, &token, inline_tx).await {
                             Ok(found) => {
                                 log::info!("GitHub repo {}/{}: {} subscribe URLs", owner, repo_name, found.len());
                                 urls.extend(found);
@@ -303,12 +332,13 @@ async fn run_crawlers(
         } else {
             crawl_cfg.github.search_topic.clone()
         };
-        spawn_crawler(&mut handles, &client, "Google search", move |client| async move {
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "Google search", inline_tx, move |client, inline_tx| async move {
             if google_query.is_empty() {
                 return Ok(Vec::new());
             }
             let max_pages = 3;
-            crawl::crawl_google(&client, &google_query, max_pages).await
+            crawl::crawl_google(&client, &google_query, max_pages, inline_tx).await
         });
     }
 
@@ -320,11 +350,12 @@ async fn run_crawlers(
             crawl_cfg.github.search_topic.clone()
         };
         let yandex_pages = crawl_cfg.yandex.pages;
-        spawn_crawler(&mut handles, &client, "Yandex search", move |client| async move {
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "Yandex search", inline_tx, move |client, inline_tx| async move {
             if yandex_query.is_empty() {
                 return Ok(Vec::new());
             }
-            crawl::crawl_yandex(&client, &yandex_query, yandex_pages).await
+            crawl::crawl_yandex(&client, &yandex_query, yandex_pages, inline_tx).await
         });
     }
 
@@ -332,8 +363,9 @@ async fn run_crawlers(
     if crawl_cfg.github.enable && crawl_cfg.github.search_gists {
         let query = crawl_cfg.github.query.clone();
         let token = gh_token.clone();
-        spawn_crawler(&mut handles, &client, "GitHub gists", move |client| async move {
-            crawl::crawl_github_gists(&client, &query, &token).await
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "GitHub gists", inline_tx, move |client, inline_tx| async move {
+            crawl::crawl_github_gists(&client, &query, &token, inline_tx).await
         });
     }
 
@@ -341,8 +373,9 @@ async fn run_crawlers(
     if crawl_cfg.github.enable && !crawl_cfg.github.search_topics.is_empty() {
         let topics = crawl_cfg.github.search_topics.clone();
         let token = gh_token.clone();
-        spawn_crawler(&mut handles, &client, "GitHub topics", move |client| async move {
-            Ok(crawl::crawl_github_topics(&client, &topics, &token).await)
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "GitHub topics", inline_tx, move |client, inline_tx| async move {
+            Ok(crawl::crawl_github_topics(&client, &topics, &token, inline_tx).await)
         });
     }
 
@@ -353,11 +386,13 @@ async fn run_crawlers(
             let users: Vec<(String, bool, usize)> = crawl_cfg.twitter.users.iter()
                 .map(|(k, v)| (k.clone(), v.enable, v.num))
                 .collect();
-            spawn_crawler(&mut handles, &client, "Twitter users", move |client| async move {
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "Twitter users", inline_tx, move |client, inline_tx| async move {
                 let mut urls = Vec::new();
                 for (name, enabled, num) in &users {
                     if !enabled { continue; }
-                    match crawl::crawl_twitter(&client, name, *num).await {
+                    let inline_tx = inline_tx.clone();
+                    match crawl::crawl_twitter(&client, name, *num, inline_tx).await {
                         Ok(found) => {
                             log::info!("Twitter {}: {} subscribe URLs", name, found.len());
                             urls.extend(found);
@@ -373,8 +408,9 @@ async fn run_crawlers(
         if crawl_cfg.twitter.search_enable && !crawl_cfg.twitter.search_query.is_empty() {
             let search_query = crawl_cfg.twitter.search_query.clone();
             let search_count = crawl_cfg.twitter.search_count;
-            spawn_crawler(&mut handles, &client, "Twitter search", move |client| async move {
-                crawl::crawl_twitter_search(&client, &search_query, search_count).await
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, "Twitter search", inline_tx, move |client, inline_tx| async move {
+                crawl::crawl_twitter_search(&client, &search_query, search_count, inline_tx).await
             });
         }
     }
@@ -385,9 +421,10 @@ async fn run_crawlers(
         if let Some(url) = &page.url {
             let url = url.clone();
             let page_cfg = page.clone();
-            spawn_crawler(&mut handles, &client, &format!("Page: {}", url), move |client| async move {
+            let inline_tx = inline_tx.clone();
+            spawn_crawler(&mut handles, &client, &format!("Page: {}", url), inline_tx, move |client, inline_tx| async move {
                 let urls_list = vec![url.clone()];
-                crawl::crawl_pages(&client, urls_list, &page_cfg).await
+                crawl::crawl_pages(&client, urls_list, &page_cfg, inline_tx).await
             });
         }
     }
@@ -399,8 +436,9 @@ async fn run_crawlers(
         let repo_name = repo.repo_name.clone();
         let commits = repo.commits;
         let token = gh_token.clone();
-        spawn_crawler(&mut handles, &client, &format!("Repo: {}/{}", username, repo_name), move |client| async move {
-            crawl::crawl_github_repo(&client, &username, &repo_name, commits, &token).await
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, &format!("Repo: {}/{}", username, repo_name), inline_tx, move |client, inline_tx| async move {
+            crawl::crawl_github_repo(&client, &username, &repo_name, commits, &token, inline_tx).await
         });
     }
 
@@ -408,8 +446,9 @@ async fn run_crawlers(
     if crawl_cfg.discord.enable {
         let discord_cfg = crawl_cfg.discord.clone();
         let settings = config.settings.clone();
-        spawn_crawler(&mut handles, &client, "Discord", move |_client| async move {
-            Ok(crawl::crawl_discord(&discord_cfg, &settings).await)
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "Discord", inline_tx, move |_client, inline_tx| async move {
+            Ok(crawl::crawl_discord(&discord_cfg, &settings, inline_tx).await)
         });
     }
 
@@ -417,15 +456,17 @@ async fn run_crawlers(
     if crawl_cfg.reddit.enable {
         let subreddits = crawl_cfg.reddit.subreddits.clone();
         let limit = crawl_cfg.reddit.limit;
-        spawn_crawler(&mut handles, &client, "Reddit", move |client| async move {
-            crawl::crawl_reddit(&client, &subreddits, limit).await
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "Reddit", inline_tx, move |client, inline_tx| async move {
+            crawl::crawl_reddit(&client, &subreddits, limit, inline_tx).await
         });
     }
 
     // ── Proxy APIs ──
     if crawl_cfg.proxy_api.enable {
-        spawn_crawler(&mut handles, &client, "Proxy API", move |client| async move {
-            crawl::crawl_proxy_apis(&client).await
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "Proxy API", inline_tx, move |client, inline_tx| async move {
+            crawl::crawl_proxy_apis(&client, inline_tx).await
         });
     }
 
@@ -433,8 +474,9 @@ async fn run_crawlers(
     if crawl_cfg.rss.enable {
         let rss_cfg = crawl_cfg.rss.clone();
         let settings = config.settings.clone();
-        spawn_crawler(&mut handles, &client, "RSS", move |_client| async move {
-            Ok(crawl::crawl_rss(&rss_cfg, &settings).await)
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, "RSS", inline_tx, move |_client, inline_tx| async move {
+            Ok(crawl::crawl_rss(&rss_cfg, &settings, inline_tx).await)
         });
     }
 
@@ -448,8 +490,9 @@ async fn run_crawlers(
         let site_cfg = site.clone();
         let site_name = site_cfg.url.clone().unwrap_or_else(|| "unknown".to_string());
         let settings = config.settings.clone();
-        spawn_crawler(&mut handles, &client, &format!("Proxy site: {}", site_name), move |_client| async move {
-            Ok(crawl::crawl_proxy_site(&site_cfg, &settings).await)
+        let inline_tx = inline_tx.clone();
+        spawn_crawler(&mut handles, &client, &format!("Proxy site: {}", site_name), inline_tx, move |_client, inline_tx| async move {
+            Ok(crawl::crawl_proxy_site(&site_cfg, &settings, inline_tx).await)
         });
     }
 

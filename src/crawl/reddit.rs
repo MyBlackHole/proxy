@@ -1,4 +1,6 @@
+use tokio::sync::mpsc;
 use crate::error::*;
+use crate::proxy::ProxyNode;
 use super::extract_subscribes;
 
 /// Crawl Reddit subreddits for proxy links using Reddit's public JSON API.
@@ -9,6 +11,7 @@ pub async fn crawl_reddit(
     client: &reqwest::Client,
     subreddits: &[String],
     limit: usize,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let mut all_results = Vec::new();
     let max_limit = limit.min(100); // Reddit API max per request
@@ -50,7 +53,9 @@ pub async fn crawl_reddit(
                             }
 
                             if !text_content.is_empty() {
-                                all_results.extend(extract_subscribes(&text_content));
+                                let mut inline = Vec::new();
+                                all_results.extend(extract_subscribes(&text_content, &mut inline));
+                                for p in inline { let _ = inline_tx.send(p); }
                             }
                         }
                     }
@@ -76,7 +81,7 @@ mod tests {
         // Proxy links found in Reddit text are extracted by the pipeline's
         // extractor stage from fetched content, not by extract_subscribes.
         let text = "Check out this free proxy: ss://YWVzLTI1Ni1nY206dGVzdEAxMjcuMC4wLjE6ODM4OA==\nAlso try trojan://password@example.com:443";
-        let results = extract_subscribes(text);
+        let results = extract_subscribes(text, &mut vec![]);
         assert!(results.is_empty(), "proxy links are not subscribe URLs");
     }
 }

@@ -1,5 +1,7 @@
 use regex::Regex;
+use tokio::sync::mpsc;
 use crate::error::*;
+use crate::proxy::ProxyNode;
 
 use super::extract_subscribes;
 
@@ -29,6 +31,7 @@ pub async fn crawl_twitter(
     client: &reqwest::Client,
     username: &str,
     count: usize,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let guest_token = get_twitter_guest_token(client).await?;
     let tweet_count = count.clamp(1, 100);
@@ -91,7 +94,9 @@ pub async fn crawl_twitter(
 
     let body: serde_json::Value = resp.json().await?;
     let text = body.to_string();
-    let results = extract_subscribes(&text);
+    let mut inline = Vec::new();
+    let results = extract_subscribes(&text, &mut inline);
+    for p in inline { let _ = inline_tx.send(p); }
 
     Ok(results)
 }
@@ -101,6 +106,7 @@ pub async fn crawl_twitter_search(
     client: &reqwest::Client,
     query: &str,
     count: usize,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     if query.is_empty() {
         return Ok(Vec::new());
@@ -139,7 +145,9 @@ pub async fn crawl_twitter_search(
 
     let body: serde_json::Value = resp.json().await?;
     let text = body.to_string();
-    let results = extract_subscribes(&text);
+    let mut inline = Vec::new();
+    let results = extract_subscribes(&text, &mut inline);
+    for p in inline { let _ = inline_tx.send(p); }
 
     Ok(results)
 }

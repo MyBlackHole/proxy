@@ -1,15 +1,18 @@
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
 use super::extract_subscribes;
 use super::build_crawl_client;
 use crate::config::DiscordCrawlConfig;
 use crate::config::SettingsConfig;
+use crate::proxy::ProxyNode;
 
 pub async fn crawl_discord(
     config: &DiscordCrawlConfig,
     settings: &SettingsConfig,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Vec<String> {
     if config.bot_token.is_empty() {
         return Vec::new();
@@ -35,6 +38,7 @@ pub async fn crawl_discord(
         let client = client.clone();
         let bot_token = bot_token.clone();
 
+        let inline_tx = inline_tx.clone();
         channel_handles.push(tokio::spawn(async move {
             let _guard = permit;
             let url = format!(
@@ -73,21 +77,29 @@ pub async fn crawl_discord(
 
             for msg in &messages {
                 if let Some(content) = msg.get("content").and_then(|v| v.as_str()) {
-                    channel_results.extend(extract_subscribes(content));
+                    let mut inline = Vec::new();
+                    channel_results.extend(extract_subscribes(content, &mut inline));
+                    for p in inline { let _ = inline_tx.send(p); }
                 }
 
                 if let Some(embeds) = msg.get("embeds").and_then(|v| v.as_array()) {
                     for embed in embeds {
                         if let Some(desc) = embed.get("description").and_then(|v| v.as_str()) {
-                            channel_results.extend(extract_subscribes(desc));
+                            let mut inline = Vec::new();
+                            channel_results.extend(extract_subscribes(desc, &mut inline));
+                            for p in inline { let _ = inline_tx.send(p); }
                         }
                         if let Some(title) = embed.get("title").and_then(|v| v.as_str()) {
-                            channel_results.extend(extract_subscribes(title));
+                            let mut inline = Vec::new();
+                            channel_results.extend(extract_subscribes(title, &mut inline));
+                            for p in inline { let _ = inline_tx.send(p); }
                         }
                         if let Some(fields) = embed.get("fields").and_then(|v| v.as_array()) {
                             for field in fields {
                                 if let Some(value) = field.get("value").and_then(|v| v.as_str()) {
-                                    channel_results.extend(extract_subscribes(value));
+                                    let mut inline = Vec::new();
+                                    channel_results.extend(extract_subscribes(value, &mut inline));
+                                    for p in inline { let _ = inline_tx.send(p); }
                                 }
                             }
                         }
@@ -107,7 +119,9 @@ pub async fn crawl_discord(
                             if let Ok(resp) = client.get(url_str).send().await
                                 && let Ok(text) = resp.text().await
                             {
-                                channel_results.extend(extract_subscribes(&text));
+                                let mut inline = Vec::new();
+                                channel_results.extend(extract_subscribes(&text, &mut inline));
+                                for p in inline { let _ = inline_tx.send(p); }
                             }
                         }
                     }
