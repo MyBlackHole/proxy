@@ -108,6 +108,20 @@ impl PersistStore {
         }
     }
 
+    /// Return the on-disk path for a fetched URL's body content.
+    pub fn fetched_path(&self, url: &str) -> PathBuf {
+        self.fetcher_dir().join(Self::url_key(url)).join("content.txt")
+    }
+
+    /// Read a previously saved fetched body back from disk.
+    ///
+    /// Returns `None` if the file doesn't exist or can't be read
+    /// (e.g. a different pipeline run cleaned up the fetcher directory).
+    pub fn load_fetched(&self, url: &str) -> Option<String> {
+        let path = self.fetched_path(url);
+        std::fs::read_to_string(&path).ok()
+    }
+
     // ── Extractor ───────────────────────────────────────────────────────
 
     /// Append extracted proxy URL strings to a file, one URL per line.

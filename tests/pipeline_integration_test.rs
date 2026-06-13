@@ -78,7 +78,7 @@ ss://YWVzLTI1Ni1nY206cGFzc3dvcmRAMTkyLjAuMi4zOjgzODg=
         .build()
         .unwrap();
 
-    let result = proxy_collector::crawl::run_pipeline(&client, &config, &[url.clone()]).await;
+    let result = proxy_collector::crawl::run_pipeline(&client, &config, std::slice::from_ref(&url)).await;
 
     // ── 验证 ──
 

@@ -27,7 +27,6 @@ pub struct CrawlTask {
 /// Resolved content ready for proxy extraction.
 pub struct ContentTask {
     pub url: String,
-    pub content: String,
     pub remaining: usize,
 }
 
@@ -319,10 +318,9 @@ async fn fetcher_stage(
                 let wc = work_counter.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
-                    if let Some(body) = &content {
+                    if content.is_some() {
                         let _ = tx.send(ContentTask {
                             url: url.clone(),
-                            content: body.clone(),
                             remaining: task.remaining,
                         });
                     } else {
@@ -364,7 +362,8 @@ async fn extractor_stage(
                     None => break,
                 };
 
-                let proxies = executor.extract_terminal(&task.content);
+                let content = persist.load_fetched(&task.url).unwrap_or_default();
+                let proxies = executor.extract_terminal(&content);
                 if !proxies.is_empty() {
                     persist.save_extracted(&task.url, &proxies);
                     for link in &proxies {
@@ -378,7 +377,7 @@ async fn extractor_stage(
 
                 // Cascade sub-source URLs (dedup'd to avoid duplicate fetches).
                 if task.remaining > 1 {
-                    let sub_urls = executor.extract_sub_sources(&task.content);
+                    let sub_urls = executor.extract_sub_sources(&content);
                     for sub in sub_urls {
                         if !seen_sub_sources.insert(sub.clone()) {
                             continue;
