@@ -1,4 +1,4 @@
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use std::path::Path;
 
 #[derive(Parser)]
@@ -6,79 +6,79 @@ use std::path::Path;
     name = "proxy-collector",
     about = "代理采集工具 - 多源爬取、验证、转换和推送代理节点"
 )]
-struct Args {
-    #[arg(short = 's', long = "config", help = "Path to configuration file")]
-    config: Option<String>,
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
 
-    #[arg(
-        long = "check",
-        help = "Run health check only without fetching new subscriptions"
-    )]
-    check: bool,
+#[derive(Subcommand)]
+enum Commands {
+    /// 采集模式：多源爬取 → 解析 → 验证 → 持久化到磁盘
+    Crawl {
+        #[arg(short = 's', long = "config", help = "Path to configuration file")]
+        config: Option<String>,
 
-    #[arg(
-        short = 'n',
-        long = "concurrency",
-        default_value_t = 64,
-        help = "Concurrency level for health checks"
-    )]
-    concurrency: usize,
+        #[arg(
+            short = 'n',
+            long = "concurrency",
+            default_value_t = 64,
+            help = "Concurrency level for health checks"
+        )]
+        concurrency: usize,
+    },
 
-    #[arg(
-        long = "validate",
-        help = "Validate a Clash config file using mihomo -t"
-    )]
-    validate: Option<String>,
+    /// 转换模式：从持久化数据读取 → 去重 → 生成 Clash 配置 → 推送存储
+    Convert {
+        #[arg(short = 's', long = "config", help = "Path to configuration file")]
+        config: Option<String>,
+    },
 
-    #[arg(
-        long = "validate-bin",
-        help = "Path to mihomo/clash-meta binary for config validation"
-    )]
-    validate_bin: Option<String>,
+    /// 验证 Clash 配置文件
+    Validate {
+        #[arg(help = "Path to Clash config file to validate")]
+        path: String,
+
+        #[arg(
+            long = "validate-bin",
+            help = "Path to mihomo/clash-meta binary for config validation"
+        )]
+        validate_bin: Option<String>,
+    },
 }
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     env_logger::Builder::from_env(env_logger::Env::default())
-        // Reqwest's internal connection-level debug logs are extremely
-        // repetitive when many URLs share the same host — suppress them.
         .filter_module("reqwest", log::LevelFilter::Warn)
         .init();
 
-    let args = Args::parse();
+    let cli = Cli::parse();
 
-    // Validate mode
-    if let Some(path) = args.validate {
-        return validate_mode(&path, args.validate_bin.as_deref().map(Path::new));
-    }
-
-    let config = args.config.unwrap_or_else(|| {
-        eprintln!("Error: --config <CONFIG> is required");
-        std::process::exit(1);
-    });
-
-    log::info!("Starting proxy-collector");
-    log::info!("Config: {}", config);
-    log::info!("Concurrency: {}", args.concurrency);
-
-    let result = if args.check {
-        proxy_collector::workflow::check_alive_only(&config).await
-    } else {
-        proxy_collector::workflow::run_workflow(&config).await
-    };
-
-    match result {
-        Ok(_) => {
-            println!("Workflow completed successfully");
-            log::info!("Workflow completed successfully");
-            Ok(())
+    match cli.command {
+        Commands::Crawl { config, concurrency } => {
+            let config_path = config.unwrap_or_else(|| {
+                eprintln!("Error: --config <CONFIG> is required");
+                std::process::exit(1);
+            });
+            log::info!("Crawl mode — config: {}, concurrency: {}", config_path, concurrency);
+            proxy_collector::workflow::run_crawl(&config_path, concurrency).await?;
+            println!("Crawl completed successfully");
         }
-        Err(e) => {
-            log::error!("Workflow failed: {}", e);
-            eprintln!("Error: {}", e);
-            Err(e.into())
+        Commands::Convert { config } => {
+            let config_path = config.unwrap_or_else(|| {
+                eprintln!("Error: --config <CONFIG> is required");
+                std::process::exit(1);
+            });
+            log::info!("Convert mode — config: {}", config_path);
+            proxy_collector::workflow::run_convert(&config_path).await?;
+            println!("Convert completed successfully");
+        }
+        Commands::Validate { path, validate_bin } => {
+            return validate_mode(&path, validate_bin.as_deref().map(Path::new));
         }
     }
+
+    Ok(())
 }
 
 fn validate_mode(path: &str, binary: Option<&Path>) -> anyhow::Result<()> {

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::future::Future;
 use std::path::Path;
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Semaphore;
 
@@ -34,10 +35,14 @@ use crate::renewal;
 use crate::storage::*;
 use crate::subscribe;
 
-// ── Top-level Workflow ────────────────────────────────────────────────────
+// ── Crawl mode ──────────────────────────────────────────────────────────
 
-pub async fn run_workflow(config_path: &str) -> Result<()> {
+pub async fn run_crawl(config_path: &str, concurrency: usize) -> Result<()> {
     let config = AppConfig::from_file(config_path)?;
+    run_crawl_inner(&config, concurrency).await
+}
+
+async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     log::info!(
         "Loaded config with {} domains, {} groups",
         config.domains.len(),
@@ -53,23 +58,27 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     log::info!("Proxy collection log: proxy_collection.log");
 
     // 1. Crawl + airport auto-register → raw subscribe URLs
-    let crawled_urls = crawl_and_discover(&client, &config).await?;
+    let crawled_urls = crawl_and_discover(&client, config).await?;
 
     // 2. Renewal flow
-    process_renewals_all(&client, &config).await?;
+    process_renewals_all(&client, config).await?;
 
     // 3. Domain subscribe-processing → EnrichedProxy (with latency)
-    let (domain_enriched, domain_raw) = process_domain_subscriptions(&direct_client, &config).await?;
+    let (domain_enriched, domain_raw) = process_domain_subscriptions(&direct_client, config).await?;
     proxy_log.log_enriched_batch("domain", &domain_enriched);
     let mut all_enriched = domain_enriched;
     let all_raw = domain_raw;
 
     // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (streaming pipeline)
+    let persist_dir = config.crawl.persist_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
     let pipeline_config = crawl::PipelineConfig {
-        fetch_concurrency: config.settings.concurrency,
-        validate_concurrency: config.settings.concurrency,
+        fetch_concurrency: concurrency,
+        validate_concurrency: concurrency,
         validate_batch_size: 50,
         nested_max_rounds: config.crawl.nested_max_rounds,
+        persist_dir: persist_dir.clone(),
     };
     let crawled_enriched = crawl::run_pipeline(
         &direct_client, &pipeline_config, &crawled_urls,
@@ -95,7 +104,40 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
         }
     }
 
-    // 6. Build storage backends
+    // Persist final result as YAML for convert mode
+    let store = crawl::PersistStore::new(persist_dir);
+    store.save_final_proxies(&all_enriched)?;
+    log::info!("Crawl completed — {} proxies persisted", all_enriched.len());
+    Ok(())
+}
+
+// ── Convert mode ─────────────────────────────────────────────────────────
+
+/// Read previously-persisted proxies and convert them to Clash output.
+pub async fn run_convert(config_path: &str) -> Result<()> {
+    let config = AppConfig::from_file(config_path)?;
+    run_convert_inner(&config).await
+}
+
+async fn run_convert_inner(config: &AppConfig) -> Result<()> {
+    log::info!("Loaded config with {} groups", config.groups.len());
+
+    init_cache_from_config(&config.settings);
+
+    let client = build_reqwest_client(config.settings.socks_proxy.as_deref())?;
+
+    // Read previously persisted proxies from crawl mode
+    let persist_dir = config.crawl.persist_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
+    let store = crawl::PersistStore::new(persist_dir);
+    let mut all_enriched = store.load_final_proxies()?;
+    log::info!("Loaded {} enriched proxies", all_enriched.len());
+
+    // Name conflict resolution
+    deduce::resolve_enriched_name_conflicts(&mut all_enriched);
+
+    // Build storage backends
     let storage = match &config.storage {
         Some(s) => create_storage(s)?,
         None => {
@@ -104,12 +146,29 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
         }
     };
 
-    // 7. Per-group processing (with smart/legacy converter)
+    // Per-group processing (with smart/legacy converter)
     for (name, group) in &config.groups {
-        process_group_smart(&client, group, &all_enriched, &storage, config.settings.append_userinfo, Some(&config.settings)).await?;
+        process_group_smart(
+            &client,
+            group,
+            &all_enriched,
+            &storage,
+            config.settings.append_userinfo,
+            Some(&config.settings),
+        ).await?;
         log::info!("Group {} processed", name);
     }
 
+    log::info!("Convert completed");
+    Ok(())
+}
+
+// ── Combined workflow (crawl + convert) ──────────────────────────────────
+
+pub async fn run_workflow(config_path: &str) -> Result<()> {
+    let config = AppConfig::from_file(config_path)?;
+    run_crawl_inner(&config, config.settings.concurrency).await?;
+    run_convert_inner(&config).await?;
     log::info!("Workflow completed");
     Ok(())
 }

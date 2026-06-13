@@ -1,5 +1,6 @@
 use serde::Deserialize;
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 
 #[derive(Debug, Clone, Deserialize)]
@@ -152,6 +153,11 @@ pub struct CrawlConfig {
     #[serde(default)]
     pub persist: CrawlPersistConfig,
 
+    /// Pipeline persistence output directory.  Defaults to ./pipeline_data/
+    /// when the pipeline is invoked without a user-specified path.
+    #[serde(default)]
+    pub persist_dir: Option<PathBuf>,
+
     #[serde(default)]
     pub config: CrawlItemConfig,
 
@@ -231,6 +237,7 @@ impl Default for CrawlConfig {
             nested_max_rounds: 0,
             discord: DiscordCrawlConfig::default(),
             rss: RssCrawlConfig::default(),
+            persist_dir: None,
             proxy_sites: default_proxy_sites(),
             reddit: RedditCrawlConfig::default(),
             proxy_api: ProxyApiCrawlConfig::default(),

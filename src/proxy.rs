@@ -659,7 +659,7 @@ impl WireGuardConfig {
 
 // ── Enriched Proxy (carries latency + geo info through pipeline) ──────────
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EnrichedProxy {
     pub node: ProxyNode,
     pub latency_ms: u64,

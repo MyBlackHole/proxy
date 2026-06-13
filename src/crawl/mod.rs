@@ -14,6 +14,7 @@
 //! - `extract`: URL pattern extraction from text
 //! - `client`: Shared HTTP client builder
 
+mod cache;
 mod client;
 mod depth;
 mod extract;
@@ -32,6 +33,7 @@ mod pages;
 mod reddit;
 mod proxy_api;
 
+pub use cache::PersistStore;
 pub use client::build_crawl_client;
 pub use depth::{crawl_items_with_depth, crawl_items_with_extractor};
 pub use pipeline::{run_pipeline, PipelineConfig};

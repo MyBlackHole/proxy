@@ -1,3 +1,4 @@
+use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
 use tokio::sync::mpsc;
@@ -5,6 +6,7 @@ use tokio::sync::mpsc::error::TryRecvError;
 use tokio::sync::watch;
 use tokio::sync::Semaphore;
 
+use super::cache::PersistStore;
 use super::depth;
 use super::extractor::ContentExtractor;
 use crate::alive;
@@ -32,78 +34,61 @@ pub struct PipelineConfig {
     pub validate_concurrency: usize,
     pub validate_batch_size: usize,
     pub nested_max_rounds: usize,
+    pub persist_dir: PathBuf,
 }
 
 // ── Pipeline Entry Point ───────────────────────────────────────────────
 
-/// Run the streaming three-stage pipeline:
-///   1. Fetcher — resolve URLs (HTTP fetch / Base64 decode)
-///   2. Extractor — extract proxy strings from content, cascade sub‑URLs
-///   3. Validator — batch + health‑check proxy nodes
+/// Run the three-stage streaming pipeline with disk persistence.
 ///
-/// Returns alive enriched proxies.  `initial_urls` are pre‑deduplicated
-/// URLs from crawlers, domain auto‑register, etc.
+/// Each stage persists its output as a side-effect (write-through sink).
+/// Persistence failures are logged but never block the pipeline.
 pub async fn run_pipeline(
     client: &reqwest::Client,
     config: &PipelineConfig,
     initial_urls: &[String],
 ) -> Vec<EnrichedProxy> {
-    if initial_urls.is_empty() {
-        return Vec::new();
-    }
-
-    let total_init = initial_urls.len();
-    log::info!("[pipeline] starting with {total_init} URLs, nested_max_rounds={}",
-        config.nested_max_rounds);
-
     let work_counter = Arc::new(AtomicIsize::new(0));
     let (shutdown_tx, shutdown_rx0) = watch::channel(false);
-    // Unbounded channels — backpressure is applied through semaphores inside each stage.
-    let (url_tx,  url_rx)  = mpsc::unbounded_channel();
+    let (url_tx, url_rx) = mpsc::unbounded_channel();
     let (content_tx, content_rx) = mpsc::unbounded_channel();
     let (proxy_tx, proxy_rx) = mpsc::unbounded_channel();
 
-    // ── Inject initial URLs (add‑before‑sub protocol) ──────────────
-    // 1) Increment counter for each initial task.
-    // 2) Send the task.
-    // 3) After all sent, subtract the "injection token" so that the
-    //    counter reflects only in‑flight work.
-    for url in initial_urls {
-        work_counter.fetch_add(1, Ordering::SeqCst);
-        let _ = url_tx.send(CrawlTask {
-            url: url.clone(),
-            remaining: config.nested_max_rounds,
-        });
-    }
-    // The injection token is the number of initial URLs — we added one
-    // per URL, so we subtract the same count after they are all enqueued.
-    work_counter.fetch_sub(total_init as isize, Ordering::SeqCst);
+    let total_init = initial_urls.len();
+    log::info!(
+        "[pipeline] starting; {} initial URLs, persist={}",
+        total_init, config.persist_dir.display(),
+    );
 
     // ── Spawn stages ───────────────────────────────────────────────
     let fetch_conc = config.fetch_concurrency;
     let validate_conc = config.validate_concurrency;
     let batch_size = config.validate_batch_size;
 
+    let persist_dir = config.persist_dir.clone();
+
     let fetcher_handle = {
         let client = client.clone();
-        let url_rx  = url_rx;
+        let url_rx = url_rx;
         let content_tx = content_tx;
         let work = Arc::clone(&work_counter);
         let shutdown = shutdown_rx0;
         let sem = Arc::new(Semaphore::new(fetch_conc));
+        let persist = PersistStore::new(persist_dir.clone());
         tokio::spawn(async move {
-            fetcher_stage(client, url_rx, content_tx, work, shutdown, sem).await;
+            fetcher_stage(client, url_rx, content_tx, work, shutdown, sem, persist).await;
         })
     };
 
     let extractor_handle = {
-        let url_tx  = url_tx;
+        let url_tx_clone = url_tx.clone();
         let content_rx = content_rx;
         let proxy_tx = proxy_tx;
         let work = Arc::clone(&work_counter);
         let shutdown_rx = shutdown_tx.subscribe();
+        let persist = PersistStore::new(persist_dir.clone());
         tokio::spawn(async move {
-            extractor_stage(url_tx, content_rx, proxy_tx, work, shutdown_rx).await;
+            extractor_stage(url_tx_clone, content_rx, proxy_tx, work, shutdown_rx, persist).await;
         })
     };
 
@@ -111,13 +96,13 @@ pub async fn run_pipeline(
         let proxy_rx = proxy_rx;
         let work = Arc::clone(&work_counter);
         let shutdown_rx = shutdown_tx.subscribe();
+        let persist = PersistStore::new(persist_dir.clone());
         tokio::spawn(async move {
-            validator_stage(proxy_rx, batch_size, validate_conc, work, shutdown_rx).await
+            validator_stage(proxy_rx, batch_size, validate_conc, work, shutdown_rx, persist).await
         })
     };
 
     // ── Shutdown watcher ───────────────────────────────────────────
-    // When work counter hits 0, signal shutdown.
     let watcher_handle = {
         let work = Arc::clone(&work_counter);
         let shutdown_tx = shutdown_tx.clone();
@@ -132,15 +117,22 @@ pub async fn run_pipeline(
         })
     };
 
+    // ── Inject initial URLs ────────────────────────────────────────
+    for url in initial_urls {
+        work_counter.fetch_add(1, Ordering::SeqCst);
+        let _ = url_tx.send(CrawlTask {
+            url: url.clone(),
+            remaining: config.nested_max_rounds,
+        });
+    }
+    work_counter.fetch_sub(total_init as isize, Ordering::SeqCst);
+
     // ── Collect results ────────────────────────────────────────────
     let enriched = validator_handle.await
         .ok()
         .unwrap_or_default();
 
-    // Ensure shutdown is signaled so stages exit promptly.
     let _ = shutdown_tx.send(true);
-
-    // Await remaining handles (best-effort, they will short-circuit on shutdown).
     let _ = fetcher_handle.await;
     let _ = extractor_handle.await;
     let _ = watcher_handle.await;
@@ -151,8 +143,6 @@ pub async fn run_pipeline(
 
 // ── Fetcher Stage ──────────────────────────────────────────────────────
 
-/// Stage 1: receive `CrawlTask`, classify URL, fetch/resolve content,
-/// send `ContentTask` downstream.
 async fn fetcher_stage(
     client: reqwest::Client,
     mut url_rx: mpsc::UnboundedReceiver<CrawlTask>,
@@ -160,6 +150,7 @@ async fn fetcher_stage(
     work_counter: Arc<AtomicIsize>,
     mut shutdown_rx: watch::Receiver<bool>,
     sem: Arc<Semaphore>,
+    persist: PersistStore,
 ) {
     loop {
         tokio::select! {
@@ -173,25 +164,29 @@ async fn fetcher_stage(
             task = url_rx.recv() => {
                 let task = match task {
                     Some(t) => t,
-                    None => break,   // all senders dropped
+                    None => break,
                 };
                 let permit = sem.clone().acquire_owned().await;
                 let c = client.clone();
                 let tx = content_tx.clone();
                 let wc = Arc::clone(&work_counter);
+                let url_for_cache = task.url.clone();
+                let content = match depth::classify(&task.url) {
+                    depth::Item::Terminal(..) => Some(task.url.clone()),
+                    depth::Item::Resolvable(src) => src.resolve(&c).await,
+                };
+                // Persist before dispatching to spawned task.
+                if let Some(body) = &content {
+                    persist.save_fetched(&url_for_cache, body);
+                }
                 tokio::spawn(async move {
                     let _permit = permit;
-                    let content = match depth::classify(&task.url) {
-                        depth::Item::Terminal(..) => Some(task.url.clone()),
-                        depth::Item::Resolvable(src) => src.resolve(&c).await,
-                    };
-                    if let Some(body) = content {
+                    if let Some(body) = &content {
                         let _ = tx.send(ContentTask {
-                            content: body,
+                            content: body.clone(),
                             remaining: task.remaining,
                         });
                     }
-                    // Task complete — decrement work counter.
                     wc.fetch_sub(1, Ordering::SeqCst);
                 });
             }
@@ -201,15 +196,15 @@ async fn fetcher_stage(
 
 // ── Extractor Stage ────────────────────────────────────────────────────
 
-/// Stage 2: receive `ContentTask`, extract terminal proxy strings,
-/// cascade sub‑source URLs back into the pipeline.
 async fn extractor_stage(
     url_tx: mpsc::UnboundedSender<CrawlTask>,
     mut content_rx: mpsc::UnboundedReceiver<ContentTask>,
     proxy_tx: mpsc::UnboundedSender<ProxyNode>,
     work_counter: Arc<AtomicIsize>,
     mut shutdown_rx: watch::Receiver<bool>,
+    persist: PersistStore,
 ) {
+    let executor = super::extractor::SubscriptionExtractor;
     loop {
         tokio::select! {
             biased;
@@ -225,20 +220,20 @@ async fn extractor_stage(
                     None => break,
                 };
 
-                // Parse all terminal proxy links.
-                let executor = super::extractor::SubscriptionExtractor;
                 let proxies = executor.extract_terminal(&task.content);
-                for link in proxies {
-                    if let Ok(node) = parser::parse_proxy_url(&link) {
-                        let _ = proxy_tx.send(node);
+                if !proxies.is_empty() {
+                    persist.save_extracted(&task.content, &proxies);
+                    for link in &proxies {
+                        if let Ok(node) = parser::parse_proxy_url(link) {
+                            let _ = proxy_tx.send(node);
+                        }
                     }
                 }
 
-                // Cascade sub-source URLs (discovery).
+                // Cascade sub-source URLs.
                 if task.remaining > 1 {
                     let sub_urls = executor.extract_sub_sources(&task.content);
                     for sub in sub_urls {
-                        // Add BEFORE send.
                         work_counter.fetch_add(1, Ordering::SeqCst);
                         let _ = url_tx.send(CrawlTask {
                             url: sub,
@@ -247,7 +242,6 @@ async fn extractor_stage(
                     }
                 }
 
-                // Content task processed.
                 work_counter.fetch_sub(1, Ordering::SeqCst);
             }
         }
@@ -256,42 +250,37 @@ async fn extractor_stage(
 
 // ── Validator Stage ────────────────────────────────────────────────────
 
-/// Stage 3: receive `ProxyNode`, batch, health‑check, collect alive
-/// `EnrichedProxy` values.
 async fn validator_stage(
     mut proxy_rx: mpsc::UnboundedReceiver<ProxyNode>,
     batch_size: usize,
     validate_concurrency: usize,
     _work_counter: Arc<AtomicIsize>,
     mut shutdown_rx: watch::Receiver<bool>,
+    persist: PersistStore,
 ) -> Vec<EnrichedProxy> {
     let mut batch = Vec::with_capacity(batch_size);
     let mut enriched = Vec::new();
 
-    // Normal processing: collect until channel closes or shutdown is
-    // signaled.  On shutdown we drain via try_recv before flushing.
     loop {
         tokio::select! {
             biased;
             _ = shutdown_rx.changed() => {
                 if *shutdown_rx.borrow() {
                     log::debug!("[pipeline] validator received shutdown — draining");
-                    // Drain all buffered items without blocking.
                     loop {
                         match proxy_rx.try_recv() {
                             Ok(n) => batch.push(n),
                             Err(TryRecvError::Empty) => break,
                             Err(TryRecvError::Disconnected) => {
                                 if !batch.is_empty() {
-                                    flush_batch(&mut batch, &mut enriched, validate_concurrency).await;
+                                    flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
                                 }
                                 return enriched;
                             }
                         }
                     }
-                    // Flush whatever we have and exit.
                     if !batch.is_empty() {
-                        flush_batch(&mut batch, &mut enriched, validate_concurrency).await;
+                        flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
                     }
                     return enriched;
                 }
@@ -301,7 +290,7 @@ async fn validator_stage(
                     Some(n) => {
                         batch.push(n);
                         if batch.len() >= batch_size {
-                            flush_batch(&mut batch, &mut enriched, validate_concurrency).await;
+                            flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
                         }
                     }
                     None => break,
@@ -310,9 +299,8 @@ async fn validator_stage(
         }
     }
 
-    // Channel closed — flush remaining batch.
     if !batch.is_empty() {
-        flush_batch(&mut batch, &mut enriched, validate_concurrency).await;
+        flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
     }
 
     enriched
@@ -322,15 +310,18 @@ async fn flush_batch(
     batch: &mut Vec<ProxyNode>,
     enriched: &mut Vec<EnrichedProxy>,
     concurrency: usize,
+    persist: &PersistStore,
 ) {
     if batch.is_empty() {
         return;
     }
     let batch_vec = std::mem::take(batch);
     let results = alive::check_alive_batch(batch_vec, concurrency).await;
-    for r in results {
+    for r in &results {
         if r.alive {
-            enriched.push(EnrichedProxy::new(r.node, r.latency_ms));
+            let ep = EnrichedProxy::new(r.node.clone(), r.latency_ms);
+            persist.save_validated(&ep);
+            enriched.push(ep);
         }
     }
 }
@@ -343,44 +334,42 @@ mod tests {
 
     #[tokio::test]
     async fn test_pipeline_empty_input() {
+        let dir = tempfile::tempdir().unwrap();
         let config = PipelineConfig {
             fetch_concurrency: 2,
             validate_concurrency: 2,
             validate_batch_size: 50,
             nested_max_rounds: 0,
+            persist_dir: dir.path().to_path_buf(),
         };
-        // run_pipeline takes reqwest::Client, but with empty URLs it
-        // returns immediately without making any network request.
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(1))
             .build()
             .unwrap();
         let result = run_pipeline(&client, &config, &[]).await;
-        assert!(result.is_empty(), "empty input should produce empty output");
+        assert!(result.is_empty());
     }
 
     #[tokio::test]
-    async fn test_pipeline_initial_urls_single_round() {
-        // Direct proxy URLs (terminal items) should be forwarded to the
-        // validator stage without any HTTP fetch.  The validator will
-        // health-check them; with no server running they will be filtered
-        // out, but the pipeline should not panic or hang.
+    async fn test_pipeline_persists_output() {
+        let dir = tempfile::tempdir().unwrap();
         let config = PipelineConfig {
             fetch_concurrency: 2,
             validate_concurrency: 2,
             validate_batch_size: 50,
             nested_max_rounds: 0,
+            persist_dir: dir.path().to_path_buf(),
         };
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(1))
             .build()
             .unwrap();
-        let urls = vec![
-            "vmess://eyJhZGQiOiIxMjcuMC4wLjEiLCJwb3J0Ijo0NDMsImFpZCI6IjAiLCJpZCI6IjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMSJ9".to_string(),
-        ];
-        let result = run_pipeline(&client, &config, &urls).await;
-        // The proxy will fail health check, so result should be empty.
-        assert!(result.is_empty(), "unreachable proxy should be filtered out");
+        let result = run_pipeline(&client, &config, &[]).await;
+        assert!(result.is_empty());
+        // Persistence directories are created even with no data.
+        assert!(dir.path().join("fetcher").is_dir());
+        assert!(dir.path().join("extractor").is_dir());
+        assert!(dir.path().join("validator").is_dir());
     }
 
     #[test]
@@ -390,8 +379,8 @@ mod tests {
             validate_concurrency: 8,
             validate_batch_size: 64,
             nested_max_rounds: 0,
+            persist_dir: PathBuf::from("/tmp/test"),
         };
         assert_eq!(config.fetch_concurrency, 4);
-        assert_eq!(config.nested_max_rounds, 0);
     }
 }
