@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicIsize, Ordering};
 use std::sync::Arc;
@@ -24,6 +25,7 @@ pub struct CrawlTask {
 
 /// Resolved content ready for proxy extraction.
 pub struct ContentTask {
+    pub url: String,
     pub content: String,
     pub remaining: usize,
 }
@@ -125,7 +127,6 @@ pub async fn run_pipeline(
             remaining: config.nested_max_rounds,
         });
     }
-    work_counter.fetch_sub(total_init as isize, Ordering::SeqCst);
 
     // ── Collect results ────────────────────────────────────────────
     let enriched = validator_handle.await
@@ -169,7 +170,6 @@ async fn fetcher_stage(
                 let permit = sem.clone().acquire_owned().await;
                 let c = client.clone();
                 let tx = content_tx.clone();
-                let wc = Arc::clone(&work_counter);
                 let url_for_cache = task.url.clone();
                 let content = match depth::classify(&task.url) {
                     depth::Item::Terminal(..) => Some(task.url.clone()),
@@ -179,15 +179,22 @@ async fn fetcher_stage(
                 if let Some(body) = &content {
                     persist.save_fetched(&url_for_cache, body);
                 }
+                let url = url_for_cache;
+                let wc = work_counter.clone();
                 tokio::spawn(async move {
                     let _permit = permit;
                     if let Some(body) = &content {
                         let _ = tx.send(ContentTask {
+                            url: url.clone(),
                             content: body.clone(),
                             remaining: task.remaining,
                         });
+                    } else {
+                        // Resolve returned None — no ContentTask will reach the
+                        // extractor, so nobody else can decrement the work
+                        // counter for this URL.  Do it here to avoid a hang.
+                        wc.fetch_sub(1, Ordering::SeqCst);
                     }
-                    wc.fetch_sub(1, Ordering::SeqCst);
                 });
             }
         }
@@ -205,6 +212,7 @@ async fn extractor_stage(
     persist: PersistStore,
 ) {
     let executor = super::extractor::SubscriptionExtractor;
+    let mut seen_sub_sources: HashSet<String> = HashSet::new();
     loop {
         tokio::select! {
             biased;
@@ -222,18 +230,23 @@ async fn extractor_stage(
 
                 let proxies = executor.extract_terminal(&task.content);
                 if !proxies.is_empty() {
-                    persist.save_extracted(&task.content, &proxies);
+                    persist.save_extracted(&task.url, &proxies);
                     for link in &proxies {
                         if let Ok(node) = parser::parse_proxy_url(link) {
                             let _ = proxy_tx.send(node);
+                        } else {
+                            log::warn!("[pipeline] parse_proxy_url failed: {link}");
                         }
                     }
                 }
 
-                // Cascade sub-source URLs.
+                // Cascade sub-source URLs (dedup'd to avoid duplicate fetches).
                 if task.remaining > 1 {
                     let sub_urls = executor.extract_sub_sources(&task.content);
                     for sub in sub_urls {
+                        if !seen_sub_sources.insert(sub.clone()) {
+                            continue;
+                        }
                         work_counter.fetch_add(1, Ordering::SeqCst);
                         let _ = url_tx.send(CrawlTask {
                             url: sub,

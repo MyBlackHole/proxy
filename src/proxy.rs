@@ -492,21 +492,21 @@ impl VLESSConfig {
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
         if let Some(ref v) = self.network { m.insert("network".into(), v.as_str().into()); }
-        if let Some(ref net) = self.network {
-            if net == "ws" {
-                let mut ws_opts = Mapping::new();
-                if let Some(ref path) = self.ws_path {
-                    ws_opts.insert("path".into(), path.as_str().into());
+        if let Some(ref net) = self.network
+            && net == "ws"
+        {
+            let mut ws_opts = Mapping::new();
+            if let Some(ref path) = self.ws_path {
+                ws_opts.insert("path".into(), path.as_str().into());
+            }
+            if let Some(ref headers) = self.ws_headers
+                && let Some(host) = headers.get("Host") {
+                    let mut hm = Mapping::new();
+                    hm.insert("Host".into(), host.as_str().into());
+                    ws_opts.insert("headers".into(), Value::Mapping(hm));
                 }
-                if let Some(ref headers) = self.ws_headers
-                    && let Some(host) = headers.get("Host") {
-                        let mut hm = Mapping::new();
-                        hm.insert("Host".into(), host.as_str().into());
-                        ws_opts.insert("headers".into(), Value::Mapping(hm));
-                    }
-                if !ws_opts.is_empty() {
-                    m.insert("ws-opts".into(), Value::Mapping(ws_opts));
-                }
+            if !ws_opts.is_empty() {
+                m.insert("ws-opts".into(), Value::Mapping(ws_opts));
             }
         }
         if let Some(ref v) = self.flow { m.insert("flow".into(), v.as_str().into()); }
