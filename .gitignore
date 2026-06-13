@@ -4,3 +4,4 @@ output
 test_crawl.toml
 Cargo.lock
 test.toml
+pipeline_data

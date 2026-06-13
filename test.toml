@@ -70,7 +70,7 @@ enable = true                             # 总开关
 exclude = ""                              # 全局排除正则
 threshold = 5                             # 代理去重阈值（相同链接出现 N 次以上才入池）
 singlelink = true                         # 是否启用单链接模式
-persist_dir = ""                          # 管道持久化根目录（空=./pipeline_data/）
+persist_dir = "./pipeline_data"           # 管道持久化根目录（不可为空）
                                           # 采集结果 YAML 存储于此，供 convert 命令读取
 
 [crawl.persist]                           # ⚠️ 已废弃（旧缓存系统），将被移除

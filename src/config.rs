@@ -1354,6 +1354,15 @@ pub struct RenameRule {
 impl AppConfig {
     pub fn from_file(path: &str) -> crate::error::Result<Self> {
         let content = std::fs::read_to_string(path)?;
-        Ok(toml::from_str(&content)?)
+        let config: Self = toml::from_str(&content)?;
+        // Validate: persist_dir must not be empty string
+        if let Some(ref d) = config.crawl.persist_dir {
+            if d.as_os_str().is_empty() {
+                return Err(crate::error::AppError::InvalidConfig(
+                    "[crawl].persist_dir must not be empty. Omit the field or set it to a valid directory path.".into(),
+                ));
+            }
+        }
+        Ok(config)
     }
 }

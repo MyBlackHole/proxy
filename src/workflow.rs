@@ -57,8 +57,27 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     let proxy_log = ProxyLogger::new("proxy_collection.log");
     log::info!("Proxy collection log: proxy_collection.log");
 
+    // Resolve persist dir once, used by URL output, pipeline config, and final YAML
+    let persist_dir = config.crawl.persist_dir
+        .clone()
+        .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
+    let _ = std::fs::create_dir_all(&persist_dir);
+
     // 1. Crawl + airport auto-register → raw subscribe URLs
     let crawled_urls = crawl_and_discover(&client, config).await?;
+    log::info!("Total collected subscribe URLs: {}", crawled_urls.len());
+
+    // Persist collected URLs as a plain-text list
+    {
+        let url_file = persist_dir.join("collected_urls.txt");
+        if let Ok(mut f) = std::fs::File::create(&url_file) {
+            use std::io::Write;
+            for url in &crawled_urls {
+                let _ = writeln!(f, "{url}");
+            }
+            log::info!("Saved {} collected URLs to {:?}", crawled_urls.len(), url_file);
+        }
+    }
 
     // 2. Renewal flow
     process_renewals_all(&client, config).await?;
@@ -70,9 +89,6 @@ async fn run_crawl_inner(config: &AppConfig, concurrency: usize) -> Result<()> {
     let all_raw = domain_raw;
 
     // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (streaming pipeline)
-    let persist_dir = config.crawl.persist_dir
-        .clone()
-        .unwrap_or_else(|| PathBuf::from("./pipeline_data"));
     let pipeline_config = crawl::PipelineConfig {
         fetch_concurrency: concurrency,
         validate_concurrency: concurrency,
