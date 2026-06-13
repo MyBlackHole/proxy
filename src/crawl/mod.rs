@@ -15,7 +15,9 @@
 //! - `client`: Shared HTTP client builder
 
 mod client;
+mod depth;
 mod extract;
+mod extractor;
 mod validate;
 mod telegram;
 mod discord;
@@ -30,7 +32,9 @@ mod reddit;
 mod proxy_api;
 
 pub use client::build_crawl_client;
+pub use depth::{crawl_items_with_depth, crawl_items_with_extractor};
 pub use extract::extract_subscribes;
+pub use extractor::{ContentExtractor, SubscriptionExtractor};
 pub use validate::{SubscribeStatus, is_valid_subscribe, is_expired, validate_subscribe};
 pub use telegram::*;
 pub use discord::*;

@@ -65,8 +65,9 @@ pub async fn run_workflow(config_path: &str) -> Result<()> {
     let mut all_raw = domain_raw;
 
     // 4. Parse + verify crawled subscribe/proxy URLs → EnrichedProxy (direct, no proxy)
+    let crawl_depth = config.crawl.depth;
     let (crawled_enriched, crawled_raw) = process_crawled_proxies(
-        &direct_client, &crawled_urls, &config.settings,
+        &direct_client, &crawled_urls, &config.settings, crawl_depth,
     ).await?;
     proxy_log.log_enriched_batch("crawl", &crawled_enriched);
     all_enriched.extend(crawled_enriched);
@@ -153,6 +154,7 @@ async fn process_crawled_proxies(
     client: &reqwest::Client,
     urls: &[String],
     settings: &SettingsConfig,
+    depth: usize,
 ) -> Result<(Vec<EnrichedProxy>, Vec<ProxyNode>)> {
     if urls.is_empty() {
         return Ok((Vec::new(), Vec::new()));
@@ -178,17 +180,17 @@ async fn process_crawled_proxies(
                 && stripped.chars().all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
                 && let Ok(decoded) = subscribe::decode_base64_subscription(&stripped)
             {
-                let format = subscribe::detect_format(decoded.as_bytes());
-                let links = subscribe::extract_links(&decoded, format);
-                if !links.is_empty() {
-                    log::info!("Base64 URL decoded into {} proxy links", links.len());
-                    for link in links {
+                let items = vec![decoded];
+                let results = crawl::crawl_items_with_depth(client, &items, depth, settings.concurrency).await;
+                if !results.is_empty() {
+                    log::info!("Base64 URL (depth={}) decoded into {} proxy links", depth, results.len());
+                    for link in results {
                         if let Ok(node) = parser::parse_proxy_url(&link) {
                             crawled_proxies.push(node);
                         }
                     }
-                    continue;
                 }
+                continue;
             }
         }
 
@@ -202,34 +204,14 @@ async fn process_crawled_proxies(
 
     // Concurrently fetch HTTP subscription URLs using shared client (no proxy)
     if !http_urls.is_empty() {
-        log::info!("Concurrently fetching {} unique HTTP subscription URLs", http_urls.len());
-        let semaphore = Arc::new(Semaphore::new(settings.concurrency));
-        let mut handles = Vec::with_capacity(http_urls.len());
+        log::info!("Concurrently fetching {} unique HTTP subscription URLs (depth={})", http_urls.len(), depth);
 
-        for url in http_urls {
-            let permit = semaphore.clone().acquire_owned().await.unwrap();
-            let client = client.clone();
-            handles.push(tokio::spawn(async move {
-                let _guard = permit;
-                match subscribe::fetch_and_parse_with_client(&client, &url).await {
-                    Ok(links) => {
-                        let proxies: Vec<ProxyNode> = links
-                            .into_iter()
-                            .filter_map(|link| parser::parse_proxy_url(&link).ok())
-                            .collect();
-                        (url, proxies)
-                    }
-                    Err(e) => {
-                        log::debug!("Failed to fetch crawled URL {}: {}", url, e);
-                        (url, Vec::new())
-                    }
-                }
-            }));
-        }
-
-        for handle in handles {
-            if let Ok((_url, proxies)) = handle.await {
-                crawled_proxies.extend(proxies);
+        // Unified depth crawling via shared engine for all depth levels
+        let results = crawl::crawl_items_with_depth(client, &http_urls, depth, settings.concurrency).await;
+        log::info!("Depth crawl returned {} proxy links", results.len());
+        for link in results {
+            if let Ok(node) = parser::parse_proxy_url(&link) {
+                crawled_proxies.push(node);
             }
         }
     }
