@@ -18,8 +18,14 @@ VMess | Trojan | Shadowsocks | SSR | Snell | Hysteria2 | VLESS | Hysteria | TUIC
 # 编译
 cargo build --release
 
-# 运行
-./target/release/proxy-collector -s config.toml
+# 采集（爬取 → 管道 → 持久化）
+./target/release/proxy-collector crawl -s config.toml
+
+# 转换（读持久化 → Clash → 推送存储）
+./target/release/proxy-collector convert -s config.toml
+
+# 或分步执行
+./target/release/proxy-collector crawl -s config.toml && ./target/release/proxy-collector convert -s config.toml
 ```
 
 ### 最小配置示例（TOML）
@@ -32,6 +38,7 @@ push_to = ["free"]
 
 [crawl]
 enable = true
+persist_dir = "./pipeline_data"            # 管道持久化输出目录
 
 [crawl.github]
 enable = true
@@ -61,14 +68,17 @@ folderid = "/tmp/output"
 ### 常用命令
 
 ```bash
-# 运行完整工作流
-proxy-collector -s config.toml
+# 采集（爬取 → 管道 → 持久化）
+proxy-collector crawl -s config.toml
 
-# 仅执行健康检查（跳过爬取）
-proxy-collector -s config.toml --check
+# 转换（读持久化 → Clash → 推送存储）
+proxy-collector convert -s config.toml
 
-# 指定并发数
-proxy-collector -s config.toml -n 128
+# 验证 Clash 配置文件
+proxy-collector validate output/clash.yaml --validate-bin /usr/local/bin/mihomo
+
+# 采集时指定并发数
+proxy-collector crawl -s config.toml -n 128
 ```
 
 ### SOCKS5 代理
