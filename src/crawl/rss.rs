@@ -1,16 +1,19 @@
 use std::sync::Arc;
 
 use regex::Regex;
+use tokio::sync::mpsc;
 use tokio::sync::Semaphore;
 
 use super::extract_subscribes;
 use super::build_crawl_client;
 use crate::config::RssCrawlConfig;
 use crate::config::SettingsConfig;
+use crate::proxy::ProxyNode;
 
 pub async fn crawl_rss(
     config: &RssCrawlConfig,
     settings: &SettingsConfig,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Vec<String> {
     let urls = &config.urls;
     if urls.is_empty() {
@@ -32,6 +35,7 @@ pub async fn crawl_rss(
         let permit = sem.clone().acquire_owned().await.unwrap();
         let client = client.clone();
         let url = url.clone();
+        let inline_tx = inline_tx.clone();
 
         handles.push(tokio::spawn(async move {
             let _guard = permit;
@@ -59,7 +63,9 @@ pub async fn crawl_rss(
             let content_fields = extract_rss_content(&body);
             let mut feed_results = Vec::new();
             for field in &content_fields {
-                feed_results.extend(extract_subscribes(field));
+                let mut inline = Vec::new();
+                feed_results.extend(extract_subscribes(field, &mut inline));
+                for p in inline { let _ = inline_tx.send(p); }
             }
             feed_results
         }));

@@ -5,7 +5,9 @@ use rand::Rng;
 use regex::Regex;
 use tokio::sync::Semaphore;
 
+use tokio::sync::mpsc;
 use crate::error::*;
+use crate::proxy::ProxyNode;
 
 use super::extract_subscribes;
 
@@ -20,6 +22,7 @@ pub async fn crawl_yandex(
     client: &reqwest::Client,
     query: &str,
     pages: usize,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let encoded: String = percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC).to_string();
     let base_url = format!(
@@ -60,6 +63,7 @@ pub async fn crawl_yandex(
             USER_AGENTS[rand::thread_rng().gen_range(0..USER_AGENTS.len())],
         ];
 
+        let inline_tx = inline_tx.clone();
         handles.push(tokio::spawn(async move {
             let _guard = permit;
             let url = format!("{}&p={}", base_url, page);
@@ -110,7 +114,9 @@ pub async fn crawl_yandex(
                     }
 
                     let cleaned = text.replace("<b>", "").replace("</b>", "").replace("<br>", "");
-                    page_results.extend(extract_subscribes(&cleaned));
+                    let mut inline = Vec::new();
+                    page_results.extend(extract_subscribes(&cleaned, &mut inline));
+                    for p in inline { let _ = inline_tx.send(p); }
                 }
             page_results
         }));

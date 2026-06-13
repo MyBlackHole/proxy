@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
+use tokio::sync::mpsc;
 use crate::error::*;
+use crate::proxy::ProxyNode;
 use tokio::sync::Semaphore;
 
 use super::extract_subscribes;
@@ -10,6 +12,7 @@ pub async fn crawl_github(
     query: &str,
     pages: usize,
     token: &str,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let encoded: String = percent_encoding::utf8_percent_encode(query, percent_encoding::NON_ALPHANUMERIC).to_string();
 
@@ -92,6 +95,7 @@ pub async fn crawl_github(
             for file_url in file_urls {
                 let permit = sem.clone().acquire_owned().await.unwrap();
                 let client = client.clone();
+                let inline_tx = inline_tx.clone();
 
                 handles.push(tokio::spawn(async move {
                     let _guard = permit;
@@ -99,7 +103,10 @@ pub async fn crawl_github(
                     if let Ok(resp) = client.get(&file_url).send().await
                         && let Ok(text) = resp.text().await
                     {
-                        extract_subscribes(&text)
+                        let mut inline = Vec::new();
+                        let urls = extract_subscribes(&text, &mut inline);
+                        for p in inline { let _ = inline_tx.send(p); }
+                        urls
                     } else {
                         Vec::new()
                     }
@@ -142,6 +149,7 @@ pub async fn crawl_github(
                             Some(u) => u.to_string(),
                             None => continue,
                         };
+                        let inline_tx = inline_tx.clone();
 
                         issue_handles.push(tokio::spawn(async move {
                             let _guard = permit;
@@ -149,7 +157,10 @@ pub async fn crawl_github(
                             if let Ok(resp) = client.get(&html_url).send().await
                                 && let Ok(text) = resp.text().await
                             {
-                                extract_subscribes(&text)
+                                let mut inline = Vec::new();
+                                let urls = extract_subscribes(&text, &mut inline);
+                                for p in inline { let _ = inline_tx.send(p); }
+                                urls
                             } else {
                                 Vec::new()
                             }
@@ -180,6 +191,7 @@ pub async fn crawl_github_search_files(
     search_repos: &[String],
     query: &str,
     token: &str,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Vec<String> {
     if search_repos.is_empty() || query.is_empty() {
         return Vec::new();
@@ -236,7 +248,9 @@ pub async fn crawl_github_search_files(
             if let Ok(resp) = client.get(&html_url).send().await
                 && let Ok(text) = resp.text().await
             {
-                results.extend(extract_subscribes(&text));
+                let mut inline = Vec::new();
+                results.extend(extract_subscribes(&text, &mut inline));
+                for p in inline { let _ = inline_tx.send(p); }
             }
         }
     }
@@ -252,6 +266,7 @@ pub async fn crawl_github_repo(
     repo: &str,
     commits: usize,
     token: &str,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let per_page = commits.max(1);
     let url = format!(
@@ -286,6 +301,7 @@ pub async fn crawl_github_repo(
         };
         let permit = sem.clone().acquire_owned().await.unwrap();
         let client = client.clone();
+        let inline_tx = inline_tx.clone();
 
         handles.push(tokio::spawn(async move {
             let _guard = permit;
@@ -300,7 +316,9 @@ pub async fn crawl_github_repo(
                     && let Some(files) = body.get("files").and_then(|v| v.as_array()) {
                         for file in files {
                             if let Some(patch) = file.get("patch").and_then(|v| v.as_str()) {
-                                results.extend(extract_subscribes(patch));
+                                let mut inline = Vec::new();
+                                results.extend(extract_subscribes(patch, &mut inline));
+                                for p in inline { let _ = inline_tx.send(p); }
                             }
                         }
                     }
@@ -325,6 +343,7 @@ pub async fn crawl_github_gists(
     client: &reqwest::Client,
     query: &str,
     token: &str,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     if query.is_empty() {
         return Ok(Vec::new());
@@ -399,12 +418,16 @@ pub async fn crawl_github_gists(
     for gist_url in all_urls {
         let permit = sem.clone().acquire_owned().await.unwrap();
         let client = client.clone();
+        let inline_tx = inline_tx.clone();
         handles.push(tokio::spawn(async move {
             let _guard = permit;
             log::debug!("[crawl_github_gists] GET gist: {}", gist_url);
             if let Ok(resp) = client.get(&gist_url).send().await
                 && let Ok(text) = resp.text().await {
-                    extract_subscribes(&text)
+                    let mut inline = Vec::new();
+                    let urls = extract_subscribes(&text, &mut inline);
+                    for p in inline { let _ = inline_tx.send(p); }
+                    urls
                 } else {
                     Vec::new()
                 }
@@ -428,6 +451,7 @@ pub async fn crawl_github_topics(
     client: &reqwest::Client,
     topics: &[String],
     token: &str,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Vec<String> {
     if topics.is_empty() {
         return Vec::new();
@@ -496,6 +520,7 @@ pub async fn crawl_github_topics(
         let permit = readme_sem.clone().acquire_owned().await.unwrap();
         let client = client.clone();
         let token = token.to_string();
+        let inline_tx = inline_tx.clone();
 
         readme_handles.push(tokio::spawn(async move {
             let _guard = permit;
@@ -512,7 +537,10 @@ pub async fn crawl_github_topics(
                 .await
                 && let Ok(text) = resp.text().await
             {
-                extract_subscribes(&text)
+                let mut inline = Vec::new();
+                let urls = extract_subscribes(&text, &mut inline);
+                for p in inline { let _ = inline_tx.send(p); }
+                urls
             } else {
                 Vec::new()
             }

@@ -1,10 +1,13 @@
+use tokio::sync::mpsc;
 use crate::error::*;
+use crate::proxy::ProxyNode;
 use super::extract_subscribes;
 
 /// Structured proxy list from external APIs.
 /// Each source returns IP:PORT pairs in various formats.
 pub async fn crawl_proxy_apis(
     client: &reqwest::Client,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Result<Vec<String>> {
     let mut all_results = Vec::new();
 
@@ -34,7 +37,9 @@ pub async fn crawl_proxy_apis(
                 }
             }
         // Also extract any subscribe URLs
-        all_results.extend(extract_subscribes(&text));
+        let mut inline = Vec::new();
+        all_results.extend(extract_subscribes(&text, &mut inline));
+        for p in inline { let _ = inline_tx.send(p); }
     }
 
     // Brief delay between sources
@@ -62,7 +67,9 @@ pub async fn crawl_proxy_apis(
                     }
                 }
             }
-        all_results.extend(extract_subscribes(&text));
+        let mut inline = Vec::new();
+        all_results.extend(extract_subscribes(&text, &mut inline));
+        for p in inline { let _ = inline_tx.send(p); }
     }
 
     all_results.sort();

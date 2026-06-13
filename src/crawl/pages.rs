@@ -1,10 +1,12 @@
 use std::sync::Arc;
 use regex::Regex;
+use tokio::sync::mpsc;
 
 use super::depth::crawl_items_with_extractor;
 use super::extract_subscribes;
 use super::extractor::ContentExtractor;
 use crate::config::PageCrawlConfig;
+use crate::proxy::ProxyNode;
 
 pub(crate) fn extract_page_links(content: &str) -> Vec<String> {
     let link_re = match Regex::new(r#"https?://[^\s"'<>]+"#) {
@@ -40,7 +42,7 @@ pub struct PageLinkExtractor;
 
 impl ContentExtractor for PageLinkExtractor {
     fn extract_terminal(&self, content: &str) -> Vec<String> {
-        extract_subscribes(content)
+        extract_subscribes(content, &mut vec![])
     }
 
     fn extract_sub_sources(&self, content: &str) -> Vec<String> {
@@ -52,10 +54,11 @@ pub async fn crawl_pages(
     client: &reqwest::Client,
     urls: Vec<String>,
     page_config: &PageCrawlConfig,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> crate::error::Result<Vec<String>> {
     let concurrency = page_config.concurrency;
     if concurrency > 1 {
-        return crawl_pages_concurrent(client, &urls, page_config, concurrency).await;
+        return crawl_pages_concurrent(client, &urls, page_config, concurrency, inline_tx).await;
     }
 
     let mut results = Vec::new();
@@ -67,7 +70,9 @@ pub async fn crawl_pages(
                 log::debug!("[crawl_pages] GET (sequential): {}", expanded);
                 if let Ok(resp) = client.get(&expanded).send().await
                     && let Ok(text) = resp.text().await {
-                        results.extend(extract_subscribes(&text));
+                        let mut inline = Vec::new();
+                        results.extend(extract_subscribes(&text, &mut inline));
+                        for p in inline { let _ = inline_tx.send(p); }
                         // Depth crawling via shared engine
                         if page_config.depth > 0 {
                             let page_links = extract_page_links(&text);
@@ -89,7 +94,9 @@ pub async fn crawl_pages(
         } else if let Ok(resp) = client.get(url).send().await
         && let Ok(text) = resp.text().await {
             log::debug!("[crawl_pages] GET (sequential): {}", url);
-            results.extend(extract_subscribes(&text));
+            let mut inline = Vec::new();
+            results.extend(extract_subscribes(&text, &mut inline));
+            for p in inline { let _ = inline_tx.send(p); }
             // Depth crawling via shared engine
             if page_config.depth > 0 {
                 let page_links = extract_page_links(&text);
@@ -119,6 +126,7 @@ async fn crawl_pages_concurrent(
     urls: &[String],
     page_config: &PageCrawlConfig,
     concurrency: usize,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> crate::error::Result<Vec<String>> {
     let mut expanded_urls: Vec<String> = Vec::new();
     for url in urls {
@@ -144,6 +152,7 @@ async fn crawl_pages_concurrent(
     for url in expanded_urls {
         let client = client.clone();
         let permit = sem.clone().acquire_owned().await;
+        let inline_tx = inline_tx.clone();
 
         handles.push(tokio::spawn(async move {
             let _permit = permit;
@@ -152,7 +161,9 @@ async fn crawl_pages_concurrent(
             if let Ok(resp) = client.get(&url).send().await
                 && let Ok(text) = resp.text().await
             {
-                page_results.extend(extract_subscribes(&text));
+                let mut inline = Vec::new();
+                page_results.extend(extract_subscribes(&text, &mut inline));
+                for p in inline { let _ = inline_tx.send(p); }
                 if depth > 0 {
                     let page_links = extract_page_links(&text);
                     if !page_links.is_empty() {

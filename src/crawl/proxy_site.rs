@@ -1,13 +1,17 @@
 use regex::Regex;
 
+use tokio::sync::mpsc;
+
 use super::extract_subscribes;
 use super::build_crawl_client;
 use crate::config::ProxySiteConfig;
 use crate::config::SettingsConfig;
+use crate::proxy::ProxyNode;
 
 pub async fn crawl_proxy_site(
     config: &ProxySiteConfig,
     settings: &SettingsConfig,
+    inline_tx: mpsc::UnboundedSender<ProxyNode>,
 ) -> Vec<String> {
     let url = match &config.url {
         Some(u) => u,
@@ -43,7 +47,9 @@ pub async fn crawl_proxy_site(
     };
 
     log::debug!("[proxy_site] fetched {} bytes from {}, extracting URLs", body.len(), url);
-    let mut results = extract_subscribes(&body);
+    let mut inline = Vec::new();
+    let mut results = extract_subscribes(&body, &mut inline);
+    for p in inline { let _ = inline_tx.send(p); }
     log::info!("[proxy_site] {}: extracted {} subscribe/proxy URLs ({} bytes)", url, results.len(), body.len());
 
     // Apply include filter if set
