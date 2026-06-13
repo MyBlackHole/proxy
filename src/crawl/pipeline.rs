@@ -401,14 +401,16 @@ async fn extractor_stage(
 
 async fn validator_stage(
     mut proxy_rx: mpsc::UnboundedReceiver<ProxyNode>,
-    batch_size: usize,
+    _batch_size: usize,
     validate_concurrency: usize,
     _work_counter: Arc<AtomicIsize>,
     mut shutdown_rx: watch::Receiver<bool>,
     persist: PersistStore,
 ) -> Vec<EnrichedProxy> {
-    let mut batch = Vec::with_capacity(batch_size);
-    let mut enriched = Vec::new();
+    let persist = Arc::new(persist);
+    let semaphore = Arc::new(Semaphore::new(validate_concurrency));
+    let mut enriched: Vec<EnrichedProxy> = Vec::new();
+    let mut handles: Vec<tokio::task::JoinHandle<Option<EnrichedProxy>>> = Vec::new();
 
     loop {
         tokio::select! {
@@ -418,18 +420,29 @@ async fn validator_stage(
                     log::debug!("[pipeline] validator received shutdown — draining");
                     loop {
                         match proxy_rx.try_recv() {
-                            Ok(n) => batch.push(n),
-                            Err(TryRecvError::Empty) => break,
-                            Err(TryRecvError::Disconnected) => {
-                                if !batch.is_empty() {
-                                    flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
-                                }
-                                return enriched;
+                            Ok(n) => {
+                                let persist = Arc::clone(&persist);
+                                let sem = Arc::clone(&semaphore);
+                                handles.push(tokio::spawn(async move {
+                                    let _permit = sem.acquire_owned().await.unwrap();
+                                    let result = alive::check_alive(&n).await;
+                                    if result.alive {
+                                        let ep = EnrichedProxy::new(result.node, result.latency_ms);
+                                        persist.save_validated(&ep);
+                                        Some(ep)
+                                    } else {
+                                        None
+                                    }
+                                }));
                             }
+                            Err(TryRecvError::Empty) => break,
+                            Err(TryRecvError::Disconnected) => { break; }
                         }
                     }
-                    if !batch.is_empty() {
-                        flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
+                    for handle in handles {
+                        if let Ok(Some(ep)) = handle.await {
+                            enriched.push(ep);
+                        }
                     }
                     return enriched;
                 }
@@ -437,10 +450,19 @@ async fn validator_stage(
             node = proxy_rx.recv() => {
                 match node {
                     Some(n) => {
-                        batch.push(n);
-                        if batch.len() >= batch_size {
-                            flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
-                        }
+                        let persist = Arc::clone(&persist);
+                        let sem = Arc::clone(&semaphore);
+                        handles.push(tokio::spawn(async move {
+                            let _permit = sem.acquire_owned().await.unwrap();
+                            let result = alive::check_alive(&n).await;
+                            if result.alive {
+                                let ep = EnrichedProxy::new(result.node, result.latency_ms);
+                                persist.save_validated(&ep);
+                                Some(ep)
+                            } else {
+                                None
+                            }
+                        }));
                     }
                     None => break,
                 }
@@ -448,31 +470,13 @@ async fn validator_stage(
         }
     }
 
-    if !batch.is_empty() {
-        flush_batch(&mut batch, &mut enriched, validate_concurrency, &persist).await;
-    }
-
-    enriched
-}
-
-async fn flush_batch(
-    batch: &mut Vec<ProxyNode>,
-    enriched: &mut Vec<EnrichedProxy>,
-    concurrency: usize,
-    persist: &PersistStore,
-) {
-    if batch.is_empty() {
-        return;
-    }
-    let batch_vec = std::mem::take(batch);
-    let results = alive::check_alive_batch(batch_vec, concurrency).await;
-    for r in &results {
-        if r.alive {
-            let ep = EnrichedProxy::new(r.node.clone(), r.latency_ms);
-            persist.save_validated(&ep);
+    for handle in handles {
+        if let Ok(Some(ep)) = handle.await {
             enriched.push(ep);
         }
     }
+
+    enriched
 }
 
 // ── Tests ───────────────────────────────────────────────────────────────────
