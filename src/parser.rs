@@ -326,7 +326,15 @@ pub fn parse_ss(raw_url: &str) -> Result<ProxyNode> {
     if let Some(at_pos) = remainder.find('@') {
         let b64_part = &remainder[..at_pos];
         let host_part = &remainder[at_pos + 1..];
-        let decoded = b64_decode_safe(b64_part)?;
+
+        // SIP002: userinfo is base64(method:password).
+        // AEAD-2022 uses plaintext method:password (no base64, per SIP022).
+        // Detect plaintext by checking if the part contains ':' (invalid in base64).
+        let decoded = if b64_part.contains(':') {
+            b64_part.to_string()
+        } else {
+            b64_decode_safe(b64_part)?
+        };
         let sep = decoded.find(':').ok_or_else(|| {
             AppError::InvalidProxy(format!("ss: invalid credentials format: {}", decoded))
         })?;
@@ -834,6 +842,7 @@ pub fn parse_tuic(raw_url: &str) -> Result<ProxyNode> {
         name,
         server: host.to_string(),
         port,
+        uuid,
         token,
         ip,
         sni,
@@ -962,6 +971,71 @@ pub fn parse_wireguard(raw_url: &str) -> Result<ProxyNode> {
 
 // ── Subscription Format Parsers ──────────────────────────────────────────
 
+/// Transport info extracted from Sing-box outbound JSON (top-level + `transport` nesting).
+struct SingBoxTransport {
+    network: Option<String>,
+    ws_path: Option<String>,
+    ws_headers: Option<HashMap<String, String>>,
+}
+
+/// Extract transport from a Sing-box outbound object.
+///
+/// Sing-box nests transport under a `transport` key:
+/// ```json
+/// {"transport": {"type": "ws", "path": "/", "headers": {"Host": "..."}}}
+/// ```
+/// But some implementations also use top-level keys. Check both.
+fn get_singbox_transport(obj: &serde_json::Value) -> SingBoxTransport {
+    let transport = obj.get("transport");
+
+    // network: transport.type -> top-level network
+    let network = transport
+        .and_then(|t| t.get("type").and_then(|v| v.as_str()))
+        .or_else(|| obj.get("network").and_then(|v| v.as_str()))
+        .map(|s| s.to_string());
+
+    // ws_path: transport.path -> top-level ws_path / path
+    let ws_path = transport
+        .and_then(|t| t.get("path").and_then(|v| v.as_str()))
+        .or_else(|| {
+            obj.get("ws_path")
+                .or_else(|| obj.get("path"))
+                .and_then(|v| v.as_str())
+        })
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_string());
+
+    // ws_headers: transport.headers -> top-level headers
+    let ws_headers = transport
+        .and_then(|t| t.get("headers").and_then(|h| h.as_object()))
+        .map(|m| m.iter().map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string())).collect())
+        .or_else(|| {
+            obj.get("headers")
+                .or_else(|| obj.get("ws_headers"))
+                .and_then(|h| {
+                    if let Some(map) = h.as_object() {
+                        Some(
+                            map.iter()
+                                .map(|(k, v)| (k.clone(), v.as_str().unwrap_or("").to_string()))
+                                .collect(),
+                        )
+                    } else if let Some(s) = h.as_str() {
+                        let mut map = HashMap::new();
+                        map.insert("Host".to_string(), s.to_string());
+                        Some(map)
+                    } else {
+                        None
+                    }
+                })
+        });
+
+    SingBoxTransport {
+        network,
+        ws_path,
+        ws_headers,
+    }
+}
+
 /// Parse Sing-box subscription format (JSON array) into proxy nodes.
 ///
 /// Sing-box format is a JSON array of server objects, e.g.:
@@ -1040,15 +1114,12 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                         serde_json::Value::String(s) => Some(s == "tls" || s == "true"),
                         _ => None,
                     });
-                let network = obj
-                    .get("network")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
                 let servername = obj
                     .get("sni")
                     .or_else(|| obj.get("servername"))
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let tx = get_singbox_transport(obj);
                 proxies.push(ProxyNode::VMess(VMessConfig {
                     name: tag,
                     server,
@@ -1059,9 +1130,9 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     tls,
                     skip_cert_verify: None,
                     servername,
-                    network,
-                    ws_path: None,
-                    ws_headers: None,
+                    network: tx.network,
+                    ws_path: tx.ws_path,
+                    ws_headers: tx.ws_headers,
                     udp: None,
                     packet_encoding: None,
                     http_path: None,
@@ -1081,6 +1152,7 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     .get("sni")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let tx = get_singbox_transport(obj);
                 proxies.push(ProxyNode::Trojan(TrojanConfig {
                     name: tag,
                     server,
@@ -1090,9 +1162,9 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     alpn: None,
                     skip_cert_verify: None,
                     udp: None,
-                    network: None,
-                    ws_path: None,
-                    ws_headers: None,
+                    network: tx.network,
+                    ws_path: tx.ws_path,
+                    ws_headers: tx.ws_headers,
                     grpc_service_name: None,
                 }));
             }
@@ -1109,10 +1181,6 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                         serde_json::Value::String(s) => Some(s == "tls" || s == "true"),
                         _ => None,
                     });
-                let network = obj
-                    .get("network")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
                 let servername = obj
                     .get("sni")
                     .or_else(|| obj.get("servername"))
@@ -1122,6 +1190,7 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     .get("flow")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
+                let tx = get_singbox_transport(obj);
                 proxies.push(ProxyNode::VLESS(VLESSConfig {
                     name: tag,
                     server,
@@ -1130,9 +1199,9 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     tls,
                     skip_cert_verify: None,
                     servername,
-                    network,
-                    ws_path: None,
-                    ws_headers: None,
+                    network: tx.network,
+                    ws_path: tx.ws_path,
+                    ws_headers: tx.ws_headers,
                     flow,
                     packet_encoding: None,
                 }));
@@ -1148,14 +1217,19 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     .get("sni")
                     .and_then(|v| v.as_str())
                     .map(|s| s.to_string());
-                let obfs = obj
-                    .get("obfs")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
-                let obfs_password = obj
-                    .get("obfs_password")
-                    .and_then(|v| v.as_str())
-                    .map(|s| s.to_string());
+                let obfs = obj.get("obfs").and_then(|v| {
+                    v.as_str().map(|s| s.to_string())
+                        .or_else(|| v.as_object().and_then(|o| {
+                            o.get("type").and_then(|t| t.as_str().map(|s| s.to_string()))
+                        }))
+                });
+                let obfs_password = obj.get("obfs").and_then(|v| {
+                    v.as_object().and_then(|o| {
+                        o.get("password").and_then(|p| p.as_str().map(|s| s.to_string()))
+                    })
+                }).or_else(|| {
+                    obj.get("obfs_password").and_then(|v| v.as_str().map(|s| s.to_string()))
+                });
                 proxies.push(ProxyNode::Hysteria2(Hysteria2Config {
                     name: tag,
                     server,
@@ -1225,9 +1299,14 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                 }));
             }
             "tuic" => {
+                let uuid = obj
+                    .get("uuid")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or("")
+                    .to_string();
                 let token = obj
-                    .get("token")
-                    .or_else(|| obj.get("password"))
+                    .get("password")
+                    .or_else(|| obj.get("token"))
                     .and_then(|v| v.as_str())
                     .unwrap_or("")
                     .to_string();
@@ -1239,6 +1318,7 @@ pub fn parse_singbox(data: &str) -> Vec<ProxyNode> {
                     name: tag,
                     server,
                     port,
+                    uuid,
                     token,
                     ip: None,
                     sni,
@@ -1482,6 +1562,92 @@ fn parse_quantumult_line(line: &str) -> Option<ProxyNode> {
                 ws_path: None,
                 ws_headers: None,
                 grpc_service_name: None,
+            }))
+        }
+        "http" => {
+            let username = params.remove("username").unwrap_or_default();
+            let password = params.remove("password");
+            let tls = params
+                .remove("over-tls")
+                .or_else(|| params.remove("tls"))
+                .map(|s| s == "true" || s == "1");
+
+            Some(ProxyNode::Http(HttpConfig {
+                name: tag,
+                server,
+                port,
+                username,
+                password,
+                tls,
+                sni: None,
+                skip_cert_verify: None,
+            }))
+        }
+        "hysteria2" | "hy2" => {
+            let password = params
+                .remove("password")
+                .unwrap_or_default();
+            let sni = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"))
+                .or_else(|| params.remove("tls-host"));
+            let obfs = params.remove("obfs");
+
+            Some(ProxyNode::Hysteria2(Hysteria2Config {
+                name: tag,
+                server,
+                port,
+                password,
+                sni,
+                skip_cert_verify: None,
+                alpn: None,
+                obfs,
+                obfs_password: None,
+                ports: None,
+                up: None,
+                down: None,
+                ca: None,
+                ca_str: None,
+                cwnd: None,
+                hop_interval: None,
+            }))
+        }
+        "vless" => {
+            let uuid = params
+                .remove("password")
+                .or_else(|| params.remove("uuid"))
+                .unwrap_or_default();
+            let tls = params
+                .remove("over-tls")
+                .or_else(|| params.remove("tls"))
+                .map(|s| s == "true" || s == "1");
+            let servername = params
+                .remove("tls-host")
+                .or_else(|| params.remove("sni"))
+                .or_else(|| params.remove("servername"));
+            let network = params.remove("network").or_else(|| {
+                if params.remove("ws").map(|s| s == "true").unwrap_or(false) {
+                    Some("ws".to_string())
+                } else {
+                    None
+                }
+            });
+            let ws_path = params.remove("ws-path").or_else(|| params.remove("path"));
+            let flow = params.remove("flow");
+
+            Some(ProxyNode::VLESS(VLESSConfig {
+                name: tag,
+                server,
+                port,
+                uuid,
+                tls,
+                skip_cert_verify: None,
+                servername,
+                network,
+                ws_path,
+                ws_headers: None,
+                flow,
+                packet_encoding: None,
             }))
         }
         _ => None,
@@ -1821,6 +1987,82 @@ fn parse_surfboard_line(line: &str) -> Option<ProxyNode> {
                 sni: None,
                 skip_cert_verify: None,
                 udp,
+            }))
+        }
+        "snell" => {
+            let psk = params
+                .remove("psk")
+                .unwrap_or_default();
+            let obfs = params.remove("obfs");
+            let version = params.remove("version").and_then(|s| s.parse::<u8>().ok());
+
+            Some(ProxyNode::Snell(SnellConfig {
+                name,
+                server,
+                port,
+                psk,
+                obfs,
+                version,
+            }))
+        }
+        "hysteria" | "hy" => {
+            let auth_str = params
+                .remove("auth")
+                .or_else(|| params.remove("password"))
+                .unwrap_or_default();
+            let up = params.remove("up");
+            let down = params.remove("down");
+            let sni = params
+                .remove("sni")
+                .or_else(|| params.remove("servername"));
+            let obfs = params.remove("obfs");
+
+            Some(ProxyNode::Hysteria(HysteriaConfig {
+                name,
+                server,
+                port,
+                auth_str,
+                protocol: None,
+                up,
+                down,
+                sni,
+                skip_cert_verify: None,
+                alpn: None,
+                obfs,
+                up_speed: None,
+                down_speed: None,
+                obfs_password: None,
+                ports: None,
+                fingerprint: None,
+                ca: None,
+                ca_str: None,
+                recv_window_conn: None,
+                recv_window: None,
+                disable_mtu_discovery: None,
+                fast_open: None,
+                hop_interval: None,
+            }))
+        }
+        "custom" => {
+            // Surge v2 custom module SS: custom, server, port, method, password, module-path
+            // Map to Shadowsocks with plugin info
+            let method = parts.get(3).copied().unwrap_or("aes-128-gcm").to_string();
+            let password = parts.get(4).and_then(|s| {
+                if s.starts_with("http") || s.contains('/') { None } else { Some(s.to_string()) }
+            }).or_else(|| params.remove("password"));
+            let plugin_opts_val = parts.get(5).or(parts.get(4)).copied()
+                .filter(|s| s.starts_with("http"))
+                .map(|s| s.to_string());
+
+            Some(ProxyNode::Shadowsocks(ShadowsocksConfig {
+                name,
+                server,
+                port,
+                cipher: method,
+                password,
+                plugin: Some("custom-module".into()),
+                plugin_opts: plugin_opts_val,
+                udp: None,
             }))
         }
         _ => None,
@@ -2231,12 +2473,28 @@ mod tests {
 
     #[test]
     fn test_parse_singbox_tuic() {
-        let data = r#"[{"type":"tuic","tag":"tu-01","server":"1.2.3.4","server_port":443,"token":"mytoken","sni":"example.com"}]"#;
+        // Official sing-box uses uuid+password (not token)
+        let data = r#"[{"type":"tuic","tag":"tu-01","server":"1.2.3.4","server_port":443,"uuid":"abc-def","password":"mytoken","sni":"example.com"}]"#;
         let proxies = parse_singbox(data);
         assert_eq!(proxies.len(), 1);
         if let ProxyNode::Tuic(cfg) = &proxies[0] {
+            assert_eq!(cfg.uuid, "abc-def");
             assert_eq!(cfg.token, "mytoken");
             assert_eq!(cfg.sni.as_deref(), Some("example.com"));
+        } else {
+            panic!("expected Tuic variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_tuic_token_fallback() {
+        // Some implementations use token instead of password
+        let data = r#"[{"type":"tuic","tag":"tu-fallback","server":"1.2.3.4","server_port":443,"token":"fallback-token"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Tuic(cfg) = &proxies[0] {
+            assert_eq!(cfg.token, "fallback-token");
+            assert_eq!(cfg.uuid, "");
         } else {
             panic!("expected Tuic variant");
         }
@@ -2410,5 +2668,49 @@ test = ss, 1.2.3.4, 8388, encrypt-method=aes, password=p1";
     fn test_parse_subscribe_unknown_format() {
         let proxies = parse_subscribe("just some regular text");
         assert!(proxies.is_empty(), "unknown format should return empty");
+    }
+
+    // ── Bug-fix validation tests from official spec audit ────────────────
+
+    #[test]
+    fn test_parse_singbox_hysteria2_obfs_object() {
+        // Sing-box official: obfs is an object {"type":"salamander","password":"xxx"}
+        let data = r#"[{"type":"hysteria2","tag":"hy2-objs","server":"1.2.3.4","server_port":8443,"password":"pass123","obfs":{"type":"salamander","password":"obfs-pass"}}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Hysteria2(cfg) = &proxies[0] {
+            assert_eq!(cfg.obfs.as_deref(), Some("salamander"));
+            assert_eq!(cfg.obfs_password.as_deref(), Some("obfs-pass"));
+        } else {
+            panic!("expected Hysteria2 variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_singbox_hysteria2_obfs_string() {
+        // Legacy/alternative: obfs as flat string
+        let data = r#"[{"type":"hysteria2","tag":"hy2-str","server":"1.2.3.4","server_port":8443,"password":"pass123","obfs":"salamander","obfs_password":"obfs-pass"}]"#;
+        let proxies = parse_singbox(data);
+        assert_eq!(proxies.len(), 1);
+        if let ProxyNode::Hysteria2(cfg) = &proxies[0] {
+            assert_eq!(cfg.obfs.as_deref(), Some("salamander"));
+            assert_eq!(cfg.obfs_password.as_deref(), Some("obfs-pass"));
+        } else {
+            panic!("expected Hysteria2 variant");
+        }
+    }
+
+    #[test]
+    fn test_parse_ss_aead2022_plaintext() {
+        // AEAD-2022 uses plaintext method:password (not base64, per SIP022)
+        let link = "ss://2022-blake3-aes-256-gcm:YctPZ6U7xPPcU+gp3u+0tx%2FtRizJN9K8y%2BuKlW2qjlI=@127.0.0.1:8388#aead-test";
+        let node = parse_ss(link).unwrap();
+        assert_eq!(node.name(), "aead-test");
+        if let ProxyNode::Shadowsocks(cfg) = &node {
+            assert_eq!(cfg.cipher, "2022-blake3-aes-256-gcm");
+            assert_eq!(cfg.password, Some("YctPZ6U7xPPcU+gp3u+0tx%2FtRizJN9K8y%2BuKlW2qjlI=".into()));
+        } else {
+            panic!("expected Shadowsocks variant");
+        }
     }
 }

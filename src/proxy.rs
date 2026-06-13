@@ -261,6 +261,7 @@ proxy_fields!(Hysteria2Config {
 });
 
 proxy_fields!(TuicConfig {
+    uuid: String,
     token: String,
     ip: Option<String>,
     sni: Option<String>,
@@ -384,14 +385,22 @@ impl VMessConfig {
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
         if let Some(ref v) = self.network { m.insert("network".into(), v.as_str().into()); }
-        if let Some(ref v) = self.ws_path { m.insert("ws-path".into(), v.as_str().into()); }
-        if let Some(ref h) = self.ws_headers && let Some(host) = h.get("Host") {
-            let mut hm = Mapping::new();
-            hm.insert("Host".into(), host.as_str().into());
-            m.insert("ws-headers".into(), Value::Mapping(hm));
-        }
         if let Some(ref net) = self.network {
-            if net == "http" {
+            if net == "ws" {
+                let mut ws_opts = Mapping::new();
+                if let Some(ref path) = self.ws_path {
+                    ws_opts.insert("path".into(), path.as_str().into());
+                }
+                if let Some(ref headers) = self.ws_headers
+                    && let Some(host) = headers.get("Host") {
+                        let mut hm = Mapping::new();
+                        hm.insert("Host".into(), host.as_str().into());
+                        ws_opts.insert("headers".into(), Value::Mapping(hm));
+                    }
+                if !ws_opts.is_empty() {
+                    m.insert("ws-opts".into(), Value::Mapping(ws_opts));
+                }
+            } else if net == "http" {
                 if let Some(ref paths) = self.http_path {
                     let mut http_opts = Mapping::new();
                     http_opts.insert("method".into(), "GET".into());
@@ -483,11 +492,22 @@ impl VLESSConfig {
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
         if let Some(ref v) = self.servername { m.insert("servername".into(), v.as_str().into()); }
         if let Some(ref v) = self.network { m.insert("network".into(), v.as_str().into()); }
-        if let Some(ref v) = self.ws_path { m.insert("ws-path".into(), v.as_str().into()); }
-        if let Some(ref h) = self.ws_headers && let Some(host) = h.get("Host") {
-            let mut hm = Mapping::new();
-            hm.insert("Host".into(), host.as_str().into());
-            m.insert("ws-headers".into(), Value::Mapping(hm));
+        if let Some(ref net) = self.network {
+            if net == "ws" {
+                let mut ws_opts = Mapping::new();
+                if let Some(ref path) = self.ws_path {
+                    ws_opts.insert("path".into(), path.as_str().into());
+                }
+                if let Some(ref headers) = self.ws_headers
+                    && let Some(host) = headers.get("Host") {
+                        let mut hm = Mapping::new();
+                        hm.insert("Host".into(), host.as_str().into());
+                        ws_opts.insert("headers".into(), Value::Mapping(hm));
+                    }
+                if !ws_opts.is_empty() {
+                    m.insert("ws-opts".into(), Value::Mapping(ws_opts));
+                }
+            }
         }
         if let Some(ref v) = self.flow { m.insert("flow".into(), v.as_str().into()); }
         if let Some(ref v) = self.packet_encoding { m.insert("packet-encoding".into(), v.as_str().into()); }
@@ -502,7 +522,7 @@ impl HysteriaConfig {
         m.insert("server".into(), self.server.as_str().into());
         m.insert("port".into(), Value::Number(Number::from(self.port)));
         m.insert("type".into(), "hysteria".into());
-        m.insert("auth_str".into(), self.auth_str.as_str().into());
+        m.insert("auth-str".into(), self.auth_str.as_str().into());
         if let Some(ref v) = self.protocol { m.insert("protocol".into(), v.as_str().into()); }
         if let Some(ref v) = self.up { m.insert("up".into(), v.as_str().into()); }
         if let Some(ref v) = self.down { m.insert("down".into(), v.as_str().into()); }
@@ -562,6 +582,7 @@ impl TuicConfig {
         m.insert("port".into(), Value::Number(Number::from(self.port)));
         m.insert("type".into(), "tuic".into());
         m.insert("token".into(), self.token.as_str().into());
+        m.insert("uuid".into(), self.uuid.as_str().into());
         if let Some(ref v) = self.ip { m.insert("ip".into(), v.as_str().into()); }
         if let Some(ref v) = self.sni { m.insert("sni".into(), v.as_str().into()); }
         if let Some(v) = self.skip_cert_verify { m.insert("skip-cert-verify".into(), v.into()); }
@@ -651,7 +672,7 @@ impl WireGuardConfig {
         if let Some(ref v) = self.ipv6 { m.insert("ipv6".into(), v.as_str().into()); }
         if let Some(ref v) = self.dns { m.insert("dns".into(), v.as_str().into()); }
         if let Some(v) = self.mtu { m.insert("mtu".into(), Value::Number(Number::from(v))); }
-        if let Some(ref v) = self.preshared_key { m.insert("preshared-key".into(), v.as_str().into()); }
+        if let Some(ref v) = self.preshared_key { m.insert("pre-shared-key".into(), v.as_str().into()); }
         if let Some(v) = self.udp { m.insert("udp".into(), v.into()); }
         m
     }

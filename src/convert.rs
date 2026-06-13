@@ -752,7 +752,7 @@ mod tests {
     fn make_tuic() -> ProxyNode {
         ProxyNode::Tuic(TuicConfig {
             name: "tuic-test".into(), server: "10.0.0.6".into(), port: 443,
-            token: "tuic-token".into(), ip: Some("10.0.0.6".into()),
+            uuid: "tuic-uuid".into(), token: "tuic-token".into(), ip: Some("10.0.0.6".into()),
             sni: Some("tuic.example.com".into()),
             skip_cert_verify: Some(true),
             alpn: Some(vec!["h3".into()]),
